@@ -1,9 +1,9 @@
 ﻿// Fichier: Program.cs
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
@@ -20,17 +20,20 @@ namespace DynamicsApiToDatabase
 
         static async Task Main(string[] args)
         {
+            Console.WriteLine("=== Récupération des articles Dynamics (JSON brut) ===");
+
             // Configuration
             SetupConfiguration();
             SetupLogging();
             SetupHttpClient();
 
-            _logger.LogInformation("Démarrage du transfert de données");
+            _logger.LogInformation("Démarrage de la récupération des articles");
 
             // Création de la base de données et des tables si nécessaire
             if (!CreateDatabaseIfNotExists())
             {
                 _logger.LogError("Impossible de créer ou d'accéder à la base de données. Arrêt du programme.");
+                Console.WriteLine("Erreur: Problème de base de données. Vérifiez votre configuration WAMP.");
                 return;
             }
 
@@ -39,50 +42,41 @@ namespace DynamicsApiToDatabase
             if (string.IsNullOrEmpty(token))
             {
                 _logger.LogError("Impossible d'obtenir un token d'accès. Arrêt du programme.");
+                Console.WriteLine("Erreur: Impossible de s'authentifier auprès de l'API Dynamics.");
                 return;
             }
 
-            // Liste des endpoints disponibles
-            var endpoints = new List<string>
+            Console.WriteLine("✓ Authentification réussie");
+
+            // Endpoint pour les articles
+            string articlesEndpoint = "data/BRINT34ReleasedProducts";
+
+            var stopwatch = Stopwatch.StartNew();
+
+            _logger.LogInformation($"Début de la récupération depuis: {articlesEndpoint}");
+            Console.WriteLine($"Récupération des articles depuis l'API...");
+
+            // Récupération et stockage du JSON brut
+            bool success = await FetchAndStoreArticlesAsync(token, articlesEndpoint);
+
+            stopwatch.Stop();
+
+            if (success)
             {
-                "data/BRINT32TransferOrderTables",
-                "data/BRINT32PurchOrderTables",
-                "data/BRINT32ReturnOrderTables",
-                "data/BRINT34ReleasedProducts",
-                "data/BRPackingSlipInterfaces",
-                "data/BRPackingSlipValidationInterfaces",
-                "data/ItemArrivalJournalHeadersV2",
-                "data/ItemArrivalJournalLinesV2"
-            };
-
-            int totalItems = 0;
-
-            // Traitement de chaque endpoint
-            foreach (var endpoint in endpoints)
+                _logger.LogInformation($"Récupération terminée en {stopwatch.ElapsedMilliseconds}ms");
+                Console.WriteLine($"✓ Récupération terminée en {stopwatch.ElapsedMilliseconds}ms");
+            }
+            else
             {
-                _logger.LogInformation($"Traitement de l'endpoint: {endpoint}");
-
-                // Récupération des données
-                var data = await FetchDataFromApiAsync(token, endpoint);
-                if (data == null)
-                {
-                    _logger.LogWarning($"Aucune donnée récupérée depuis {endpoint}. Passage à l'endpoint suivant.");
-                    continue;
-                }
-
-                // Insertion des données dans la base de données
-                int inserted = InsertDataIntoDb(data, endpoint);
-                totalItems += inserted;
-
-                _logger.LogInformation($"Traitement terminé pour {endpoint}: {inserted} articles traités");
+                Console.WriteLine("❌ Erreur lors de la récupération");
             }
 
-            _logger.LogInformation($"Transfert de données terminé. Total: {totalItems} articles traités.");
+            Console.WriteLine("Appuyez sur une touche pour fermer...");
+            Console.ReadKey();
         }
 
         private static void SetupConfiguration()
         {
-            // Chargement de la configuration depuis appsettings.json et variables d'environnement
             _configuration = new ConfigurationBuilder()
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
                 .AddEnvironmentVariables()
@@ -91,12 +85,11 @@ namespace DynamicsApiToDatabase
 
         private static void SetupLogging()
         {
-            // Configuration du système de logging
             var loggerFactory = LoggerFactory.Create(builder =>
             {
                 builder
                     .AddConsole()
-                    .AddFile("api_transfer.log");
+                    .AddFile("logs/dynamics_sync.log");
             });
 
             _logger = loggerFactory.CreateLogger<Program>();
@@ -107,28 +100,49 @@ namespace DynamicsApiToDatabase
             _httpClient = new HttpClient();
             _httpClient.DefaultRequestHeaders.Accept.Add(
                 new MediaTypeWithQualityHeaderValue("application/json"));
+            _httpClient.Timeout = TimeSpan.FromSeconds(60);
         }
 
         private static async Task<string> GetAccessTokenAsync()
         {
             try
             {
+                // URL exacte comme dans Postman
                 var authUrl = $"https://login.microsoftonline.com/{_configuration["TenantId"]}/oauth2/token";
-                var content = new FormUrlEncodedContent(new[]
+
+                _logger.LogInformation($"Demande de token à: {authUrl}");
+
+                var formParams = new List<KeyValuePair<string, string>>
                 {
                     new KeyValuePair<string, string>("grant_type", "client_credentials"),
                     new KeyValuePair<string, string>("client_id", _configuration["ClientId"]),
                     new KeyValuePair<string, string>("client_secret", _configuration["ClientSecret"]),
                     new KeyValuePair<string, string>("resource", _configuration["Resource"])
-                });
+                };
+
+                var content = new FormUrlEncodedContent(formParams);
 
                 var response = await _httpClient.PostAsync(authUrl, content);
-                response.EnsureSuccessStatusCode();
 
-                var responseJson = await response.Content.ReadAsStringAsync();
-                var tokenData = JsonSerializer.Deserialize<TokenResponse>(responseJson);
+                var responseText = await response.Content.ReadAsStringAsync();
+                _logger.LogInformation($"Réponse d'authentification: {response.StatusCode}");
 
-                return tokenData?.access_token;
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError($"Erreur d'authentification: {responseText}");
+                    return null;
+                }
+
+                var tokenData = JsonSerializer.Deserialize<TokenResponse>(responseText);
+
+                if (string.IsNullOrEmpty(tokenData?.access_token))
+                {
+                    _logger.LogError("Token d'accès vide dans la réponse");
+                    return null;
+                }
+
+                _logger.LogInformation("Token d'accès obtenu avec succès");
+                return tokenData.access_token;
             }
             catch (Exception ex)
             {
@@ -137,23 +151,64 @@ namespace DynamicsApiToDatabase
             }
         }
 
-        private static async Task<JsonDocument> FetchDataFromApiAsync(string token, string endpoint)
+        private static async Task<bool> FetchAndStoreArticlesAsync(string token, string endpoint)
         {
+            var stopwatch = Stopwatch.StartNew();
+
             try
             {
+                // Construction de l'URL exacte comme dans Postman
                 var url = $"{_configuration["Resource"]}{endpoint}";
+
+                // Configuration de l'autorisation
                 _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-                var response = await _httpClient.GetAsync(url);
-                response.EnsureSuccessStatusCode();
+                _logger.LogInformation($"Appel API GET: {url}");
+                Console.WriteLine($"Appel API: {url}");
 
-                var content = await response.Content.ReadAsStringAsync();
-                return JsonDocument.Parse(content);
+                // Appel à l'API
+                var response = await _httpClient.GetAsync(url);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError($"Erreur API {response.StatusCode}: {errorContent}");
+                    Console.WriteLine($"Erreur API: {response.StatusCode}");
+                    LogSyncResult(endpoint, "ERROR", 0, $"Erreur API: {response.StatusCode}", stopwatch.ElapsedMilliseconds);
+                    return false;
+                }
+
+                // Récupération du JSON brut
+                var jsonContent = await response.Content.ReadAsStringAsync();
+                _logger.LogInformation($"JSON reçu: {jsonContent.Length} caractères");
+                Console.WriteLine($"✓ Données reçues: {jsonContent.Length} caractères");
+
+                // Validation que c'est du JSON valide
+                JsonDocument.Parse(jsonContent);
+
+                // Stockage en base de données
+                int articlesCount = StoreRawJsonInDatabase(jsonContent, endpoint);
+
+                stopwatch.Stop();
+
+                LogSyncResult(endpoint, "SUCCESS", articlesCount, $"Récupération réussie", stopwatch.ElapsedMilliseconds);
+
+                Console.WriteLine($"✓ {articlesCount} articles stockés en base");
+                return true;
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "Erreur: JSON invalide reçu de l'API");
+                Console.WriteLine("Erreur: JSON invalide reçu");
+                LogSyncResult(endpoint, "ERROR", 0, $"JSON invalide: {ex.Message}", stopwatch.ElapsedMilliseconds);
+                return false;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Erreur lors de la récupération des données depuis {endpoint}");
-                return null;
+                _logger.LogError(ex, $"Erreur lors de la récupération depuis {endpoint}");
+                Console.WriteLine($"Erreur: {ex.Message}");
+                LogSyncResult(endpoint, "ERROR", 0, ex.Message, stopwatch.ElapsedMilliseconds);
+                return false;
             }
         }
 
@@ -161,10 +216,10 @@ namespace DynamicsApiToDatabase
         {
             try
             {
-                // Connexion sans spécifier la base de données
                 var connectionStringBuilder = new MySqlConnectionStringBuilder
                 {
                     Server = _configuration["Database:Host"],
+                    Port = (uint)_configuration.GetValue<int>("Database:Port", 3306),
                     UserID = _configuration["Database:User"],
                     Password = _configuration["Database:Password"]
                 };
@@ -172,11 +227,12 @@ namespace DynamicsApiToDatabase
                 using (var connection = new MySqlConnection(connectionStringBuilder.ConnectionString))
                 {
                     connection.Open();
+                    _logger.LogInformation("✓ Connexion MySQL établie");
 
-                    // Création de la base de données si elle n'existe pas
+                    // Création de la base de données
                     using (var command = connection.CreateCommand())
                     {
-                        command.CommandText = $"CREATE DATABASE IF NOT EXISTS `{_configuration["Database:Name"]}`";
+                        command.CommandText = $"CREATE DATABASE IF NOT EXISTS `{_configuration["Database:Name"]}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci";
                         command.ExecuteNonQuery();
                     }
 
@@ -187,195 +243,140 @@ namespace DynamicsApiToDatabase
                         command.ExecuteNonQuery();
                     }
 
-                    // Création de la table des articles
+                    // Création de la table pour le JSON brut
                     using (var command = connection.CreateCommand())
                     {
                         command.CommandText = @"
-                            CREATE TABLE IF NOT EXISTS articles (
+                            CREATE TABLE IF NOT EXISTS articles_raw (
                                 id INT AUTO_INCREMENT PRIMARY KEY,
-                                item_number VARCHAR(100),
-                                api_endpoint VARCHAR(255),
-                                json_data JSON,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                                json_data JSON NOT NULL,
+                                retrieved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                api_endpoint VARCHAR(255) DEFAULT 'BRINT34ReleasedProducts',
+                                INDEX idx_retrieved_at (retrieved_at),
+                                INDEX idx_api_endpoint (api_endpoint)
                             )";
                         command.ExecuteNonQuery();
                     }
 
-                    // Création de la table des logs d'importation
+                    // Création de la table des logs
                     using (var command = connection.CreateCommand())
                     {
                         command.CommandText = @"
-                            CREATE TABLE IF NOT EXISTS import_logs (
+                            CREATE TABLE IF NOT EXISTS sync_logs (
                                 id INT AUTO_INCREMENT PRIMARY KEY,
-                                api_endpoint VARCHAR(255),
-                                items_count INT,
-                                status VARCHAR(50),
+                                endpoint VARCHAR(255),
+                                status ENUM('SUCCESS', 'ERROR') DEFAULT 'SUCCESS',
+                                articles_count INT DEFAULT 0,
                                 message TEXT,
-                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                                execution_time_ms INT,
+                                sync_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                             )";
                         command.ExecuteNonQuery();
                     }
                 }
 
-                _logger.LogInformation("Base de données et tables créées ou vérifiées avec succès");
+                _logger.LogInformation("✓ Base de données et tables créées/vérifiées");
+                Console.WriteLine("✓ Base de données initialisée");
                 return true;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Erreur lors de la création de la base de données");
+                Console.WriteLine($"Erreur DB: {ex.Message}");
                 return false;
             }
         }
 
-        private static int InsertDataIntoDb(JsonDocument data, string endpoint)
+        private static int StoreRawJsonInDatabase(string jsonContent, string endpoint)
         {
             try
             {
-                // Vérification de la structure des données
-                if (!data.RootElement.TryGetProperty("value", out var valueElement))
-                {
-                    _logger.LogWarning($"Aucune donnée à insérer depuis {endpoint}");
-                    return 0;
-                }
-
-                var items = valueElement.EnumerateArray();
-                if (!items.Any())
-                {
-                    _logger.LogWarning($"Aucun article trouvé dans les données de {endpoint}");
-                    return 0;
-                }
-
-                // Construction de la chaîne de connexion complète
                 var connectionString = new MySqlConnectionStringBuilder
                 {
                     Server = _configuration["Database:Host"],
+                    Port = (uint)_configuration.GetValue<int>("Database:Port", 3306),
                     UserID = _configuration["Database:User"],
                     Password = _configuration["Database:Password"],
                     Database = _configuration["Database:Name"]
                 }.ConnectionString;
 
-                int insertedCount = 0;
+                // Parse du JSON pour compter les articles
+                var jsonDoc = JsonDocument.Parse(jsonContent);
+                int articlesCount = 0;
+
+                if (jsonDoc.RootElement.TryGetProperty("value", out var valueElement))
+                {
+                    articlesCount = valueElement.GetArrayLength();
+                }
 
                 using (var connection = new MySqlConnection(connectionString))
                 {
                     connection.Open();
 
-                    // Pour chaque article dans les données
-                    foreach (var item in valueElement.EnumerateArray())
+                    // Insertion du JSON brut complet
+                    using (var command = connection.CreateCommand())
                     {
-                        // Extraction de l'identifiant de l'article (si disponible)
-                        string itemNumber = null;
-                        if (item.TryGetProperty("ItemNumber", out var itemNumberProp))
-                        {
-                            itemNumber = itemNumberProp.GetString();
-                        }
-                        else if (item.TryGetProperty("itemId", out var itemIdProp))
-                        {
-                            itemNumber = itemIdProp.GetString();
-                        }
-                        else if (item.TryGetProperty("InventLocationId", out var locationIdProp))
-                        {
-                            itemNumber = locationIdProp.GetString();
-                        }
+                        command.CommandText = @"
+                            INSERT INTO articles_raw (json_data, api_endpoint, retrieved_at) 
+                            VALUES (@json_data, @endpoint, NOW())";
 
-                        // Conversion de l'article en JSON
-                        string jsonData = item.GetRawText();
-
-                        // Vérification si l'article existe déjà
-                        using (var checkCommand = connection.CreateCommand())
-                        {
-                            checkCommand.CommandText = "SELECT id FROM articles WHERE item_number = @itemNumber AND api_endpoint = @endpoint";
-                            checkCommand.Parameters.AddWithValue("@itemNumber", itemNumber ?? (object)DBNull.Value);
-                            checkCommand.Parameters.AddWithValue("@endpoint", endpoint);
-
-                            var existingItemId = checkCommand.ExecuteScalar();
-
-                            if (existingItemId != null)
-                            {
-                                // Mise à jour de l'article existant
-                                using (var updateCommand = connection.CreateCommand())
-                                {
-                                    updateCommand.CommandText = "UPDATE articles SET json_data = @jsonData WHERE id = @id";
-                                    updateCommand.Parameters.AddWithValue("@jsonData", jsonData);
-                                    updateCommand.Parameters.AddWithValue("@id", existingItemId);
-                                    updateCommand.ExecuteNonQuery();
-                                }
-                            }
-                            else
-                            {
-                                // Insertion d'un nouvel article
-                                using (var insertCommand = connection.CreateCommand())
-                                {
-                                    insertCommand.CommandText = "INSERT INTO articles (item_number, api_endpoint, json_data) VALUES (@itemNumber, @endpoint, @jsonData)";
-                                    insertCommand.Parameters.AddWithValue("@itemNumber", itemNumber ?? (object)DBNull.Value);
-                                    insertCommand.Parameters.AddWithValue("@endpoint", endpoint);
-                                    insertCommand.Parameters.AddWithValue("@jsonData", jsonData);
-                                    insertCommand.ExecuteNonQuery();
-                                }
-                            }
-                        }
-
-                        insertedCount++;
-                    }
-
-                    // Enregistrement du log d'importation
-                    using (var logCommand = connection.CreateCommand())
-                    {
-                        logCommand.CommandText = "INSERT INTO import_logs (api_endpoint, items_count, status, message) VALUES (@endpoint, @count, @status, @message)";
-                        logCommand.Parameters.AddWithValue("@endpoint", endpoint);
-                        logCommand.Parameters.AddWithValue("@count", insertedCount);
-                        logCommand.Parameters.AddWithValue("@status", "SUCCESS");
-                        logCommand.Parameters.AddWithValue("@message", $"Importation réussie de {insertedCount} articles");
-                        logCommand.ExecuteNonQuery();
+                        command.Parameters.AddWithValue("@json_data", jsonContent);
+                        command.Parameters.AddWithValue("@endpoint", endpoint);
+                        command.ExecuteNonQuery();
                     }
                 }
 
-                _logger.LogInformation($"Insertion réussie de {insertedCount} articles depuis {endpoint}");
-                return insertedCount;
+                _logger.LogInformation($"JSON brut stocké en base. {articlesCount} articles dans la réponse");
+                return articlesCount;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Erreur lors de l'insertion des données depuis {endpoint}");
+                _logger.LogError(ex, "Erreur lors du stockage en base de données");
+                throw;
+            }
+        }
 
-                // Tentative d'enregistrement du log d'erreur
-                try
+        private static void LogSyncResult(string endpoint, string status, int articlesCount, string message, long executionTimeMs)
+        {
+            try
+            {
+                var connectionString = new MySqlConnectionStringBuilder
                 {
-                    var connectionString = new MySqlConnectionStringBuilder
-                    {
-                        Server = _configuration["Database:Host"],
-                        UserID = _configuration["Database:User"],
-                        Password = _configuration["Database:Password"],
-                        Database = _configuration["Database:Name"]
-                    }.ConnectionString;
+                    Server = _configuration["Database:Host"],
+                    Port = (uint)_configuration.GetValue<int>("Database:Port", 3306),
+                    UserID = _configuration["Database:User"],
+                    Password = _configuration["Database:Password"],
+                    Database = _configuration["Database:Name"]
+                }.ConnectionString;
 
-                    using (var connection = new MySqlConnection(connectionString))
-                    {
-                        connection.Open();
+                using (var connection = new MySqlConnection(connectionString))
+                {
+                    connection.Open();
 
-                        using (var command = connection.CreateCommand())
-                        {
-                            command.CommandText = "INSERT INTO import_logs (api_endpoint, items_count, status, message) VALUES (@endpoint, @count, @status, @message)";
-                            command.Parameters.AddWithValue("@endpoint", endpoint);
-                            command.Parameters.AddWithValue("@count", 0);
-                            command.Parameters.AddWithValue("@status", "ERROR");
-                            command.Parameters.AddWithValue("@message", ex.Message);
-                            command.ExecuteNonQuery();
-                        }
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText = @"
+                            INSERT INTO sync_logs (endpoint, status, articles_count, message, execution_time_ms) 
+                            VALUES (@endpoint, @status, @articles_count, @message, @execution_time)";
+
+                        command.Parameters.AddWithValue("@endpoint", endpoint);
+                        command.Parameters.AddWithValue("@status", status);
+                        command.Parameters.AddWithValue("@articles_count", articlesCount);
+                        command.Parameters.AddWithValue("@message", message);
+                        command.Parameters.AddWithValue("@execution_time", executionTimeMs);
+                        command.ExecuteNonQuery();
                     }
                 }
-                catch
-                {
-                    // En cas d'erreur lors de l'enregistrement du log d'erreur
-                }
-
-                return 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de l'enregistrement du log");
             }
         }
     }
 
     // Classe pour désérialiser la réponse du token
-    class TokenResponse
+    public class TokenResponse
     {
         public string token_type { get; set; }
         public string scope { get; set; }
