@@ -1,2 +1,169 @@
 # Ne jamais tracker le fichier Postman avec des secrets
 BR_Env_UAT.postman_environment.json
+
+
+# ===== FICHIERS DE SÉCURITÉ =====
+# Ne jamais commiter les secrets et configurations sensibles
+appsettings.json
+appsettings.*.json
+*.postman_environment.json
+BR_Env_UAT.postman_environment.json
+secrets.json
+.env
+.env.local
+.env.production
+
+# ===== FICHIERS DE BUILD .NET =====
+# Dossiers de build
+bin/
+obj/
+out/
+
+# Fichiers de build
+*.dll
+*.exe
+*.pdb
+*.cache
+*.ilk
+*.log
+*.tlog
+*.tmp
+*.tmp_proj
+*.vspscc
+*.vssscc
+.builds
+*.pidb
+*.svclog
+*.scc
+
+# ===== VISUAL STUDIO / VS CODE =====
+# Dossiers Visual Studio
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+
+# Fichiers temporaires Visual Studio
+*.tmp
+*.temp
+*_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# ===== LOGS ET DONNÉES =====
+# Dossier des logs
+logs/
+*.log
+log-*.txt
+
+# Bases de données locales
+*.db
+*.sqlite
+*.sqlite3
+*.mdf
+*.ldf
+
+# Fichiers de backup
+*.bak
+*.backup
+
+# ===== PACKAGES ET DÉPENDANCES =====
+# NuGet
+packages/
+*.nupkg
+*.snupkg
+.nuget/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Node.js (si vous ajoutez du frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===== SYSTÈME D'EXPLOITATION =====
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ===== OUTILS DE DÉVELOPPEMENT =====
+# Postman
+*.postman_collection.json.backup
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Rider
+.idea/
+*.sln.iml
+
+# ===== FICHIERS TEMPORAIRES =====
+# Fichiers temporaires Windows
+*.tmp
+*.temp
+~$*
+
+# Fichiers de cache
+.cache/
+*.cache
+
+# ===== CONFIGURATION LOCALE =====
+# Configuration de développement local
+appsettings.Development.json
+appsettings.Local.json
+connectionstrings.json
+
+# ===== SPÉCIFIQUE AU PROJET =====
+# Scripts SQL générés automatiquement
+database_generated.sql
+migration_*.sql
+
+# Fichiers de test de données
+test_data/
+sample_data/
+
+# Certificats et clés
+*.pfx
+*.p12
+*.key
+*.crt
+*.cer
+*.pem
+
+# ===== KEEP THESE FILES =====
+# (Commentaires pour clarifier ce qu'il faut garder)
+# Program.cs - ✓ À commiter
+# *.csproj - ✓ À commiter  
+# database_structure.sql - ✓ À commiter
+# requetes_utiles.sql - ✓ À commiter
+# README.md - ✓ À commiter
+
+
+
