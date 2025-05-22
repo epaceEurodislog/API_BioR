@@ -1,0 +1,2 @@
+# Ne jamais tracker le fichier Postman avec des secrets
+BR_Env_UAT.postman_environment.json
