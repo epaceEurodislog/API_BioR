@@ -23,7 +23,7 @@ namespace DynamicsApiToDatabase
         static async Task Main(string[] args)
         {
             Console.WriteLine("=== Synchronisation intelligente des articles Dynamics ===");
-            
+
             // Configuration
             SetupConfiguration();
             SetupLogging();
@@ -52,17 +52,17 @@ namespace DynamicsApiToDatabase
 
             // Endpoint pour les articles
             string articlesEndpoint = "data/BRINT34ReleasedProducts";
-            
+
             var stopwatch = Stopwatch.StartNew();
-            
+
             _logger.LogInformation($"Début de la synchronisation depuis: {articlesEndpoint}");
             Console.WriteLine($"Récupération des articles depuis l'API...");
 
             // Récupération et synchronisation intelligente des articles
             var syncResult = await FetchAndSyncArticlesAsync(token, articlesEndpoint);
-            
+
             stopwatch.Stop();
-            
+
             Console.WriteLine($"\n=== RÉSULTAT DE LA SYNCHRONISATION ===");
             Console.WriteLine($"✓ Articles traités: {syncResult.TotalProcessed}");
             Console.WriteLine($"  - Nouveaux articles ajoutés: {syncResult.NewArticles}");
@@ -70,9 +70,9 @@ namespace DynamicsApiToDatabase
             Console.WriteLine($"  - Articles inchangés: {syncResult.UnchangedArticles}");
             Console.WriteLine($"  - Erreurs: {syncResult.ErrorCount}");
             Console.WriteLine($"⏱️ Temps d'exécution: {stopwatch.ElapsedMilliseconds}ms");
-            
+
             _logger.LogInformation($"Synchronisation terminée: {syncResult.TotalProcessed} articles traités en {stopwatch.ElapsedMilliseconds}ms");
-            
+
             Console.WriteLine("\nAppuyez sur une touche pour fermer...");
             Console.ReadKey();
         }
@@ -110,9 +110,9 @@ namespace DynamicsApiToDatabase
             try
             {
                 var authUrl = $"https://login.microsoftonline.com/{_configuration["TenantId"]}/oauth2/token";
-                
+
                 _logger.LogInformation($"Demande de token à: {authUrl}");
-                
+
                 var formParams = new List<KeyValuePair<string, string>>
                 {
                     new KeyValuePair<string, string>("grant_type", "client_credentials"),
@@ -124,9 +124,9 @@ namespace DynamicsApiToDatabase
                 var content = new FormUrlEncodedContent(formParams);
                 var response = await _httpClient.PostAsync(authUrl, content);
                 var responseText = await response.Content.ReadAsStringAsync();
-                
+
                 _logger.LogInformation($"Réponse d'authentification: {response.StatusCode}");
-                
+
                 if (!response.IsSuccessStatusCode)
                 {
                     _logger.LogError($"Erreur d'authentification: {responseText}");
@@ -134,7 +134,7 @@ namespace DynamicsApiToDatabase
                 }
 
                 var tokenData = JsonSerializer.Deserialize<TokenResponse>(responseText);
-                
+
                 if (string.IsNullOrEmpty(tokenData?.access_token))
                 {
                     _logger.LogError("Token d'accès vide dans la réponse");
@@ -155,7 +155,7 @@ namespace DynamicsApiToDatabase
         {
             var result = new SyncResult();
             var stopwatch = Stopwatch.StartNew();
-            
+
             try
             {
                 var url = $"{_configuration["Resource"]}{endpoint}";
@@ -163,15 +163,15 @@ namespace DynamicsApiToDatabase
 
                 _logger.LogInformation($"Appel API GET: {url}");
                 Console.WriteLine($"Appel API: {url}");
-                
+
                 var response = await _httpClient.GetAsync(url);
-                
+
                 if (!response.IsSuccessStatusCode)
                 {
                     var errorContent = await response.Content.ReadAsStringAsync();
                     _logger.LogError($"Erreur API {response.StatusCode}: {errorContent}");
                     Console.WriteLine($"Erreur API: {response.StatusCode}");
-                    LogSyncResult(endpoint, "ERROR", 0, $"Erreur API: {response.StatusCode}", stopwatch.ElapsedMilliseconds);
+                    LogSyncError(endpoint, $"Erreur API: {response.StatusCode}", stopwatch.ElapsedMilliseconds);
                     return result;
                 }
 
@@ -180,7 +180,7 @@ namespace DynamicsApiToDatabase
                 Console.WriteLine($"✓ Données reçues: {jsonContent.Length} caractères");
 
                 var jsonDocument = JsonDocument.Parse(jsonContent);
-                
+
                 if (!jsonDocument.RootElement.TryGetProperty("value", out var articlesArray))
                 {
                     _logger.LogWarning("Propriété 'value' non trouvée dans la réponse JSON");
@@ -193,21 +193,19 @@ namespace DynamicsApiToDatabase
 
                 // Synchronisation intelligente des articles
                 result = await SyncArticlesWithDatabaseAsync(articles, endpoint);
-                
+
                 stopwatch.Stop();
-                
+
                 string status = result.ErrorCount == 0 ? "SUCCESS" : (result.ErrorCount < result.TotalProcessed ? "WARNING" : "ERROR");
-                LogSyncResult(endpoint, status, result.TotalProcessed, 
-                    $"Nouveaux: {result.NewArticles}, Mis à jour: {result.UpdatedArticles}, Inchangés: {result.UnchangedArticles}, Erreurs: {result.ErrorCount}", 
-                    stopwatch.ElapsedMilliseconds);
-                
+                LogSyncResult(endpoint, status, result, stopwatch.ElapsedMilliseconds);
+
                 return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"Erreur lors de la récupération depuis {endpoint}");
                 Console.WriteLine($"Erreur: {ex.Message}");
-                LogSyncResult(endpoint, "ERROR", 0, ex.Message, stopwatch.ElapsedMilliseconds);
+                LogSyncError(endpoint, ex.Message, stopwatch.ElapsedMilliseconds);
                 return result;
             }
         }
@@ -215,7 +213,7 @@ namespace DynamicsApiToDatabase
         private static async Task<SyncResult> SyncArticlesWithDatabaseAsync(JsonElement[] articles, string endpoint)
         {
             var result = new SyncResult();
-            
+
             try
             {
                 var connectionString = new MySqlConnectionStringBuilder
@@ -231,10 +229,17 @@ namespace DynamicsApiToDatabase
                 {
                     connection.Open();
 
-                    // Récupération des hash existants pour comparaison
-                    var existingHashes = await GetExistingArticleHashesAsync(connection);
-                    
-                    Console.WriteLine($"Base de données actuelle: {existingHashes.Count} articles");
+                    // ÉTAPE 1 : Vider complètement la table articles_raw
+                    Console.WriteLine("Suppression de tous les articles existants...");
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText = "TRUNCATE TABLE articles_raw";
+                        await command.ExecuteNonQueryAsync();
+                    }
+                    Console.WriteLine("✓ Table articles_raw vidée");
+
+                    // ÉTAPE 2 : Insérer tous les articles de l'API
+                    Console.WriteLine("Insertion des nouveaux articles...");
 
                     foreach (var article in articles)
                     {
@@ -243,57 +248,35 @@ namespace DynamicsApiToDatabase
                             result.TotalProcessed++;
 
                             // Extraction de l'ItemId
-                            string itemId = article.TryGetProperty("ItemId", out var itemIdProp) 
+                            string itemId = article.TryGetProperty("ItemId", out var itemIdProp)
                                 ? itemIdProp.GetString() ?? "UNKNOWN"
                                 : "UNKNOWN";
 
-                            // Calcul du hash pour détecter les modifications
                             string articleJson = article.GetRawText();
                             string currentHash = CalculateHash(articleJson);
 
-                            // Vérification si l'article existe et s'il a été modifié
-                            if (existingHashes.TryGetValue(itemId, out var existingHash))
-                            {
-                                if (existingHash == currentHash)
-                                {
-                                    // Article inchangé
-                                    result.UnchangedArticles++;
-                                    _logger.LogDebug($"Article inchangé: {itemId}");
-                                }
-                                else
-                                {
-                                    // Article modifié -> UPDATE
-                                    await UpdateExistingArticleAsync(connection, itemId, articleJson, currentHash, endpoint);
-                                    result.UpdatedArticles++;
-                                    _logger.LogInformation($"Article mis à jour: {itemId}");
-                                }
-                            }
-                            else
-                            {
-                                // Nouvel article -> INSERT
-                                await InsertNewArticleAsync(connection, itemId, articleJson, currentHash, endpoint);
-                                result.NewArticles++;
-                                _logger.LogInformation($"Nouvel article ajouté: {itemId}");
-                            }
+                            // Insertion de tous les articles comme "nouveaux"
+                            await InsertNewArticleAsync(connection, itemId, articleJson, currentHash, endpoint);
+                            result.NewArticles++;
 
                             // Affichage du progrès
-                            if (result.TotalProcessed % 10 == 0)
+                            if (result.TotalProcessed % 50 == 0)
                             {
-                                Console.Write($"\rTraitement: {result.TotalProcessed}/{articles.Length} articles - " +
-                                    $"Nouveaux: {result.NewArticles}, MàJ: {result.UpdatedArticles}, Inchangés: {result.UnchangedArticles}");
+                                Console.Write($"\rInsertion: {result.TotalProcessed}/{articles.Length} articles");
                             }
                         }
                         catch (Exception ex)
                         {
                             result.ErrorCount++;
-                            _logger.LogError(ex, $"Erreur lors du traitement de l'article {result.TotalProcessed}");
+                            _logger.LogError(ex, $"Erreur lors de l'insertion de l'article {result.TotalProcessed}");
                         }
                     }
 
                     Console.WriteLine(); // Nouvelle ligne après le compteur
+                    Console.WriteLine($"✓ {result.NewArticles} articles insérés");
                 }
 
-                _logger.LogInformation($"Synchronisation terminée: {result.NewArticles} nouveaux, {result.UpdatedArticles} mis à jour, {result.UnchangedArticles} inchangés");
+                _logger.LogInformation($"Synchronisation complète terminée: {result.NewArticles} articles rechargés, {result.ErrorCount} erreurs");
                 return result;
             }
             catch (Exception ex)
@@ -303,22 +286,109 @@ namespace DynamicsApiToDatabase
             }
         }
 
+        private static async Task<HashSet<string>> GetExistingArticleIdsAsync(MySqlConnection connection)
+        {
+            var itemIds = new HashSet<string>();
+
+            try
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "SELECT item_id FROM articles_raw WHERE item_id IS NOT NULL";
+
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            var itemId = reader.GetString(0);
+                            itemIds.Add(itemId);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de la récupération des ItemIds existants");
+            }
+
+            return itemIds;
+        }
+
+        private static async Task<string> GetArticleHashAsync(MySqlConnection connection, string itemId)
+        {
+            try
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = "SELECT content_hash FROM articles_raw WHERE item_id = @item_id";
+                    command.Parameters.AddWithValue("@item_id", itemId);
+
+                    var result = await command.ExecuteScalarAsync();
+                    return result?.ToString();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération du hash pour {itemId}");
+                return null;
+            }
+        }
+
+        private static async Task ForceUpdateArticleAsync(MySqlConnection connection, string itemId, string jsonData, string hash, string endpoint)
+        {
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = @"
+                    UPDATE articles_raw 
+                    SET json_data = @json_data, 
+                        content_hash = @hash, 
+                        last_updated_at = NOW()
+                    WHERE item_id = @item_id";
+
+                command.Parameters.AddWithValue("@json_data", jsonData);
+                command.Parameters.AddWithValue("@hash", hash);
+                command.Parameters.AddWithValue("@item_id", itemId);
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+
+        private static async Task TouchArticleAsync(MySqlConnection connection, string itemId)
+        {
+            try
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = @"
+                        UPDATE articles_raw 
+                        SET last_updated_at = NOW()
+                        WHERE item_id = @item_id";
+
+                    command.Parameters.AddWithValue("@item_id", itemId);
+                    await command.ExecuteNonQueryAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors du touch de l'article {itemId}");
+            }
+        }
+
         private static async Task<Dictionary<string, string>> GetExistingArticleHashesAsync(MySqlConnection connection)
         {
             var hashes = new Dictionary<string, string>();
-            
+
             try
             {
                 using (var command = connection.CreateCommand())
                 {
                     command.CommandText = "SELECT item_id, content_hash FROM articles_raw WHERE item_id IS NOT NULL";
-                    
+
                     using (var reader = await command.ExecuteReaderAsync())
                     {
                         while (await reader.ReadAsync())
                         {
-                            var itemId = reader.GetString("item_id");
-                            var hash = reader.GetString("content_hash");
+                            var itemId = reader.GetString(0); // index 0 pour item_id
+                            var hash = reader.GetString(1);   // index 1 pour content_hash
                             hashes[itemId] = hash;
                         }
                     }
@@ -339,7 +409,7 @@ namespace DynamicsApiToDatabase
                 command.CommandText = @"
                     INSERT INTO articles_raw (json_data, api_endpoint, content_hash, first_seen_at, last_updated_at) 
                     VALUES (@json_data, @endpoint, @hash, NOW(), NOW())";
-                
+
                 command.Parameters.AddWithValue("@json_data", jsonData);
                 command.Parameters.AddWithValue("@endpoint", endpoint);
                 command.Parameters.AddWithValue("@hash", hash);
@@ -358,7 +428,7 @@ namespace DynamicsApiToDatabase
                         last_updated_at = NOW(),
                         update_count = update_count + 1
                     WHERE item_id = @item_id";
-                
+
                 command.Parameters.AddWithValue("@json_data", jsonData);
                 command.Parameters.AddWithValue("@hash", hash);
                 command.Parameters.AddWithValue("@item_id", itemId);
@@ -474,7 +544,7 @@ namespace DynamicsApiToDatabase
             }
         }
 
-        private static void LogSyncResult(string endpoint, string status, int articlesCount, string message, long executionTimeMs)
+        private static void LogSyncResult(string endpoint, string status, SyncResult result, long executionTimeMs)
         {
             try
             {
@@ -494,13 +564,130 @@ namespace DynamicsApiToDatabase
                     using (var command = connection.CreateCommand())
                     {
                         command.CommandText = @"
-                            INSERT INTO sync_logs (endpoint, status, articles_count, message, execution_time_ms) 
-                            VALUES (@endpoint, @status, @articles_count, @message, @execution_time)";
-                        
+                            INSERT INTO sync_logs (
+                                endpoint, 
+                                status, 
+                                total_articles_processed, 
+                                new_articles, 
+                                updated_articles, 
+                                unchanged_articles, 
+                                error_count, 
+                                message, 
+                                execution_time_ms
+                            ) VALUES (
+                                @endpoint, 
+                                @status, 
+                                @total_articles_processed, 
+                                @new_articles, 
+                                @updated_articles, 
+                                @unchanged_articles, 
+                                @error_count, 
+                                @message, 
+                                @execution_time
+                            )";
+
                         command.Parameters.AddWithValue("@endpoint", endpoint);
                         command.Parameters.AddWithValue("@status", status);
-                        command.Parameters.AddWithValue("@articles_count", articlesCount);
+                        command.Parameters.AddWithValue("@total_articles_processed", result.TotalProcessed);
+                        command.Parameters.AddWithValue("@new_articles", result.NewArticles);
+                        command.Parameters.AddWithValue("@updated_articles", result.UpdatedArticles);
+                        command.Parameters.AddWithValue("@unchanged_articles", result.UnchangedArticles);
+                        command.Parameters.AddWithValue("@error_count", result.ErrorCount);
+                        command.Parameters.AddWithValue("@message", $"Synchronisation - Nouveaux: {result.NewArticles}, MàJ: {result.UpdatedArticles}, Inchangés: {result.UnchangedArticles}");
+                        command.Parameters.AddWithValue("@execution_time", executionTimeMs);
+                        command.ExecuteNonQuery();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de l'enregistrement du log détaillé");
+            }
+        }
+
+        // Méthode de logging simple pour les erreurs
+        private static void LogSyncError(string endpoint, string message, long executionTimeMs)
+        {
+            try
+            {
+                var connectionString = new MySqlConnectionStringBuilder
+                {
+                    Server = _configuration["Database:Host"],
+                    Port = (uint)_configuration.GetValue<int>("Database:Port", 3306),
+                    UserID = _configuration["Database:User"],
+                    Password = _configuration["Database:Password"],
+                    Database = _configuration["Database:Name"]
+                }.ConnectionString;
+
+                using (var connection = new MySqlConnection(connectionString))
+                {
+                    connection.Open();
+
+                    using (var command = connection.CreateCommand())
+                    {
+                        command.CommandText = @"
+                       INSERT INTO sync_logs (
+                           endpoint, 
+                           status, 
+                           total_articles_processed, 
+                           new_articles, 
+                           updated_articles, 
+                           unchanged_articles, 
+                           error_count, 
+                           message, 
+                           execution_time_ms
+                       ) VALUES (
+                                @endpoint, 
+                                'ERROR', 
+                                0, 
+                                0, 
+                                0, 
+                                0, 
+                                1, 
+                                @message, 
+                                @execution_time
+                            )";
+
+                        command.Parameters.AddWithValue("@endpoint", endpoint);
                         command.Parameters.AddWithValue("@message", message);
+                        command.Parameters.AddWithValue("@execution_time", executionTimeMs);
+                        command.ExecuteNonQuery();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de l'enregistrement du log d'erreur");
+            }
+        }
+
+        private static void LogSyncResult(string endpoint, string status, int articlesCount, string message, long executionTimeMs)
+        {
+            try
+            {
+                var connectionString = new MySqlConnectionStringBuilder
+                {
+                    Server = _configuration["Database:Host"],
+                    Port = (uint)_configuration.GetValue<int>("Database:Port", 3306),
+                    UserID = _configuration["Database:User"],
+                    Password = _configuration["Database:Password"],
+                    Database = _configuration["Database:Name"]
+                }.ConnectionString;
+
+                using (var connection = new MySqlConnection(connectionString))
+                {
+                    connection.Open();
+
+                    using (var command = connection.CreateCommand())
+                    {
+                        // Adaptation pour la structure existante de sync_logs
+                        command.CommandText = @"
+                            INSERT INTO sync_logs (endpoint, status, message, execution_time_ms) 
+                            VALUES (@endpoint, @status, @message, @execution_time)";
+
+                        command.Parameters.AddWithValue("@endpoint", endpoint);
+                        command.Parameters.AddWithValue("@status", status);
+                        command.Parameters.AddWithValue("@message", $"Articles: {articlesCount} - {message}");
                         command.Parameters.AddWithValue("@execution_time", executionTimeMs);
                         command.ExecuteNonQuery();
                     }
