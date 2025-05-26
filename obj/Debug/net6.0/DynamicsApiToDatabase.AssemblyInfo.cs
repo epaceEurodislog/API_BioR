@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("DynamicsApiToDatabase")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3e9f18020eae4bbae45d0b2d649366c3087990c5")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f04bbfe6a31bd395444778676a6517547245dfc2")]
 [assembly: System.Reflection.AssemblyProductAttribute("DynamicsApiToDatabase")]
 [assembly: System.Reflection.AssemblyTitleAttribute("DynamicsApiToDatabase")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
