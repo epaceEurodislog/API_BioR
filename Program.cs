@@ -1,4 +1,5 @@
-﻿using System;
+﻿// Fichier: Program.cs - CODE COMPLET FINAL avec gestion des lignes multiples et corrections
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.Http;
@@ -22,14 +23,14 @@ namespace DynamicsApiToDatabase
 
         static async Task Main(string[] args)
         {
-            Console.WriteLine("=== Synchronisation intelligente des articles Dynamics avec analyse des balises ===");
+            Console.WriteLine("=== Synchronisation intelligente des articles Dynamics avec gestion des lignes multiples ===");
 
             // Configuration
             SetupConfiguration();
             SetupLogging();
             SetupHttpClient();
 
-            _logger.LogInformation("Démarrage de la synchronisation des articles avec analyse des balises");
+            _logger.LogInformation("Démarrage de la synchronisation des articles avec gestion des lignes multiples");
 
             // Création de la base de données et des tables si nécessaire
             if (!CreateDatabaseIfNotExists())
@@ -50,10 +51,15 @@ namespace DynamicsApiToDatabase
 
             Console.WriteLine("✓ Authentification réussie");
 
-            // Endpoint pour les articles
-            string articlesEndpoint = "data/BRINT34ReleasedProducts";
+            var globalStopwatch = Stopwatch.StartNew();
 
-            var stopwatch = Stopwatch.StartNew();
+            // ========================================
+            // SYNCHRONISATION DES ARTICLES
+            // ========================================
+
+            Console.WriteLine("\n📦 === SYNCHRONISATION DES ARTICLES ===");
+            string articlesEndpoint = "data/BRINT34ReleasedProducts";
+            var articleStopwatch = Stopwatch.StartNew();
 
             _logger.LogInformation($"Début de la synchronisation depuis: {articlesEndpoint}");
             Console.WriteLine($"Récupération des articles depuis l'API...");
@@ -61,17 +67,29 @@ namespace DynamicsApiToDatabase
             // Récupération et synchronisation intelligente des articles
             var syncResult = await FetchAndSyncArticlesAsync(token, articlesEndpoint);
 
-            stopwatch.Stop();
+            articleStopwatch.Stop();
 
-            Console.WriteLine($"\n=== RÉSULTAT DE LA SYNCHRONISATION ===");
+            Console.WriteLine($"\n📋 RÉSULTAT DE LA SYNCHRONISATION DES ARTICLES:");
             Console.WriteLine($"✓ Articles traités: {syncResult.TotalProcessed}");
             Console.WriteLine($"  - Nouveaux articles ajoutés: {syncResult.NewArticles}");
             Console.WriteLine($"  - Articles mis à jour: {syncResult.UpdatedArticles}");
             Console.WriteLine($"  - Articles inchangés: {syncResult.UnchangedArticles}");
             Console.WriteLine($"  - Erreurs: {syncResult.ErrorCount}");
-            Console.WriteLine($"⏱️ Temps d'exécution: {stopwatch.ElapsedMilliseconds}ms");
+            Console.WriteLine($"⏱️ Temps d'exécution articles: {articleStopwatch.ElapsedMilliseconds}ms");
 
-            _logger.LogInformation($"Synchronisation terminée: {syncResult.TotalProcessed} articles traités en {stopwatch.ElapsedMilliseconds}ms");
+            // ========================================
+            // SYNCHRONISATION DES COMMANDES AVEC LIGNES MULTIPLES
+            // ========================================
+
+            // Synchronisation des commandes (Retour, Achat, Transfert) avec gestion des lignes
+            await SyncAllOrdersAsync(token);
+
+            globalStopwatch.Stop();
+
+            Console.WriteLine($"\n🎉 === SYNCHRONISATION GLOBALE TERMINÉE ===");
+            Console.WriteLine($"⏱️ Temps total d'exécution: {globalStopwatch.ElapsedMilliseconds}ms");
+
+            _logger.LogInformation($"Synchronisation globale terminée: Articles + Commandes en {globalStopwatch.ElapsedMilliseconds}ms");
 
             Console.WriteLine("\nAppuyez sur une touche pour fermer...");
             Console.ReadKey();
@@ -150,6 +168,429 @@ namespace DynamicsApiToDatabase
                 return null;
             }
         }
+
+        // ========================================
+        // SYNCHRONISATION DES COMMANDES AVEC GESTION DES LIGNES
+        // ========================================
+
+        private static async Task SyncAllOrdersAsync(string token)
+        {
+            Console.WriteLine("\n🚚 === SYNCHRONISATION DES COMMANDES AVEC LIGNES MULTIPLES ===");
+
+            var orderEndpoints = new List<OrderEndpoint>
+            {
+                new OrderEndpoint
+                {
+                    Name = "ReturnOrders",
+                    Endpoint = "data/BRINT32ReturnOrderTables",
+                    TableName = "return_orders_raw",
+                    PrimaryKeyField = "ReturnItemNum",
+                    LineNumberField = "LineNum",
+                    DisplayName = "Commandes de Retour"
+                },
+                new OrderEndpoint
+                {
+                    Name = "PurchOrders",
+                    Endpoint = "data/BRINT32PurchOrderTables",
+                    TableName = "purch_orders_raw",
+                    PrimaryKeyField = "PurchId",
+                    LineNumberField = "LineNumber",
+                    DisplayName = "Commandes d'Achat"
+                },
+                new OrderEndpoint
+                {
+                    Name = "TransferOrders",
+                    Endpoint = "data/BRINT32TransferOrderTables",
+                    TableName = "transfer_orders_raw",
+                    PrimaryKeyField = "TransferId",
+                    LineNumberField = "LineNum",
+                    DisplayName = "Ordres de Transfert"
+                }
+            };
+
+            var totalResults = new List<OrderSyncResult>();
+            var globalStopwatch = Stopwatch.StartNew();
+
+            foreach (var orderEndpoint in orderEndpoints)
+            {
+                Console.WriteLine($"\n📦 Synchronisation des {orderEndpoint.DisplayName}...");
+                var result = await FetchAndSyncOrdersAsync(token, orderEndpoint);
+                totalResults.Add(result);
+
+                Console.WriteLine($"✓ {orderEndpoint.DisplayName}: {result.NewOrderLines} nouvelles lignes, {result.UpdatedOrderLines} lignes modifiées, {result.UnchangedOrderLines} lignes inchangées");
+            }
+
+            globalStopwatch.Stop();
+
+            // Résumé global des commandes
+            Console.WriteLine($"\n📋 === RÉSUMÉ GLOBAL DES COMMANDES (par lignes) ===");
+            foreach (var result in totalResults)
+            {
+                Console.WriteLine($"  {result.OrderType}:");
+                Console.WriteLine($"    ➕ Nouvelles lignes: {result.NewOrderLines}");
+                Console.WriteLine($"    🔄 Lignes modifiées: {result.UpdatedOrderLines}");
+                Console.WriteLine($"    ✅ Lignes inchangées: {result.UnchangedOrderLines}");
+                Console.WriteLine($"    ❌ Erreurs: {result.ErrorCount}");
+            }
+            Console.WriteLine($"⏱️ Temps total commandes: {globalStopwatch.ElapsedMilliseconds}ms");
+        }
+
+        private static async Task<OrderSyncResult> FetchAndSyncOrdersAsync(string token, OrderEndpoint orderConfig)
+        {
+            var result = new OrderSyncResult { OrderType = orderConfig.DisplayName };
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                var url = $"{_configuration["Resource"]}{orderConfig.Endpoint}";
+                _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+                _logger.LogInformation($"Appel API GET: {url}");
+                Console.WriteLine($"📡 Appel API: {orderConfig.DisplayName}");
+
+                var response = await _httpClient.GetAsync(url);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError($"Erreur API {response.StatusCode} pour {orderConfig.Name}: {errorContent}");
+                    Console.WriteLine($"❌ Erreur API {response.StatusCode} pour {orderConfig.DisplayName}");
+                    return result;
+                }
+
+                var jsonContent = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"✓ Données reçues: {jsonContent.Length} caractères");
+
+                var jsonDocument = JsonDocument.Parse(jsonContent);
+
+                if (!jsonDocument.RootElement.TryGetProperty("value", out var ordersArray))
+                {
+                    Console.WriteLine($"⚠️ Aucune commande trouvée pour {orderConfig.DisplayName}");
+                    return result;
+                }
+
+                var orderLines = ordersArray.EnumerateArray().ToArray();
+                Console.WriteLine($"✓ {orderLines.Length} lignes de {orderConfig.DisplayName.ToLower()} trouvées dans l'API");
+
+                // Synchronisation intelligente des lignes de commandes
+                result = await SyncOrderLinesWithDatabaseAsync(orderLines, orderConfig);
+
+                stopwatch.Stop();
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération des {orderConfig.DisplayName}");
+                Console.WriteLine($"❌ Erreur: {ex.Message}");
+                return result;
+            }
+        }
+
+        private static async Task<OrderSyncResult> SyncOrderLinesWithDatabaseAsync(JsonElement[] orderLines, OrderEndpoint orderConfig)
+        {
+            var result = new OrderSyncResult { OrderType = orderConfig.DisplayName };
+
+            try
+            {
+                var connectionString = new MySqlConnectionStringBuilder
+                {
+                    Server = _configuration["Database:Host"],
+                    Port = (uint)_configuration.GetValue<int>("Database:Port", 3306),
+                    UserID = _configuration["Database:User"],
+                    Password = _configuration["Database:Password"],
+                    Database = _configuration["Database:Name"]
+                }.ConnectionString;
+
+                using (var connection = new MySqlConnection(connectionString))
+                {
+                    connection.Open();
+
+                    Console.WriteLine($"🔄 Synchronisation intelligente des lignes pour {orderConfig.DisplayName}...");
+
+                    // ÉTAPE 1 : Récupérer les hash existants pour les lignes
+                    var existingHashes = await GetExistingOrderLineHashesAsync(connection, orderConfig.TableName);
+                    Console.WriteLine($"📋 {existingHashes.Count} lignes existantes trouvées");
+
+                    // ÉTAPE 2 : Récupérer les IDs composites existants pour détecter les suppressions
+                    var existingCompositeIds = await GetExistingOrderLineCompositeIdsAsync(connection, orderConfig.TableName);
+
+                    // ÉTAPE 3 : Traquer les IDs composites de l'API pour détecter les lignes supprimées
+                    var apiCompositeIds = new HashSet<string>();
+
+                    // ÉTAPE 4 : Synchronisation ligne par ligne
+                    Console.WriteLine("🔍 Analyse et synchronisation des lignes de commandes...");
+
+                    foreach (var orderLine in orderLines)
+                    {
+                        try
+                        {
+                            result.TotalProcessed++;
+
+                            // Extraction de l'ID principal (commande) - Gestion flexible du type
+                            string orderId = "UNKNOWN";
+                            if (orderLine.TryGetProperty(orderConfig.PrimaryKeyField, out var orderIdProp))
+                            {
+                                orderId = orderIdProp.ValueKind switch
+                                {
+                                    JsonValueKind.String => orderIdProp.GetString() ?? "UNKNOWN",
+                                    JsonValueKind.Number => orderIdProp.GetDecimal().ToString(),
+                                    _ => orderIdProp.ToString() ?? "UNKNOWN"
+                                };
+                            }
+
+                            // Extraction du numéro de ligne - Gestion flexible du type
+                            string lineNumber = "0";
+                            if (orderLine.TryGetProperty(orderConfig.LineNumberField, out var lineNumberProp))
+                            {
+                                lineNumber = lineNumberProp.ValueKind switch
+                                {
+                                    JsonValueKind.String => lineNumberProp.GetString() ?? "0",
+                                    JsonValueKind.Number => lineNumberProp.GetDecimal().ToString(),
+                                    _ => lineNumberProp.ToString() ?? "0"
+                                };
+                            }
+
+                            // Création de l'ID composite unique (OrderId + LineNumber)
+                            string compositeId = $"{orderId}_{lineNumber}";
+                            apiCompositeIds.Add(compositeId);
+
+                            string orderLineJson = orderLine.GetRawText();
+                            string currentHash = CalculateHash(orderLineJson);
+
+                            // Vérifier si la ligne de commande existe déjà
+                            if (existingHashes.ContainsKey(compositeId))
+                            {
+                                if (existingHashes[compositeId] != currentHash)
+                                {
+                                    // Ligne modifiée
+                                    await UpdateExistingOrderLineAsync(connection, orderConfig.TableName, compositeId, orderId, lineNumber, orderLineJson, currentHash, orderConfig.Endpoint);
+                                    result.UpdatedOrderLines++;
+
+                                    if (result.UpdatedOrderLines % 10 == 0)
+                                    {
+                                        Console.WriteLine($"🔄 {result.UpdatedOrderLines} lignes mises à jour");
+                                    }
+                                }
+                                else
+                                {
+                                    // Ligne inchangée
+                                    await TouchOrderLineAsync(connection, orderConfig.TableName, compositeId);
+                                    result.UnchangedOrderLines++;
+                                }
+                            }
+                            else
+                            {
+                                // Nouvelle ligne de commande
+                                await InsertNewOrderLineAsync(connection, orderConfig.TableName, compositeId, orderId, lineNumber, orderLineJson, currentHash, orderConfig.Endpoint);
+                                result.NewOrderLines++;
+
+                                if (result.NewOrderLines % 10 == 0)
+                                {
+                                    Console.WriteLine($"➕ {result.NewOrderLines} nouvelles lignes ajoutées");
+                                }
+                            }
+
+                            // Affichage du progrès
+                            if (result.TotalProcessed % 100 == 0)
+                            {
+                                string progressMessage = $"📊 {orderConfig.DisplayName}: {result.TotalProcessed}/{orderLines.Length} | Nouvelles: {result.NewOrderLines} | Modifiées: {result.UpdatedOrderLines} | Inchangées: {result.UnchangedOrderLines}";
+                                Console.Write($"\r{progressMessage}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            result.ErrorCount++;
+                            _logger.LogError(ex, $"Erreur lors du traitement de la ligne {result.TotalProcessed} pour {orderConfig.Name}");
+                        }
+                    }
+
+                    Console.WriteLine(); // Nouvelle ligne
+
+                    // ÉTAPE 5 : Marquer les lignes supprimées
+                    var deletedCompositeIds = existingCompositeIds.Except(apiCompositeIds).ToList();
+                    if (deletedCompositeIds.Any())
+                    {
+                        Console.WriteLine($"🗑️ {deletedCompositeIds.Count} lignes de {orderConfig.DisplayName.ToLower()} supprimées de l'API");
+                        foreach (var deletedCompositeId in deletedCompositeIds)
+                        {
+                            await MarkOrderLineAsDeletedAsync(connection, orderConfig.TableName, deletedCompositeId);
+                        }
+                    }
+
+                    Console.WriteLine($"✅ Synchronisation terminée pour {orderConfig.DisplayName}");
+                }
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la synchronisation des {orderConfig.DisplayName}");
+                throw;
+            }
+        }
+
+        // ========================================
+        // MÉTHODES DE GESTION DES LIGNES DE COMMANDES
+        // ========================================
+
+        private static async Task<Dictionary<string, string>> GetExistingOrderLineHashesAsync(MySqlConnection connection, string tableName)
+        {
+            var hashes = new Dictionary<string, string>();
+
+            try
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $"SELECT composite_id, content_hash FROM {tableName} WHERE composite_id IS NOT NULL AND (is_deleted = FALSE OR is_deleted IS NULL)";
+
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            var compositeId = reader.GetString(0);
+                            var hash = reader.GetString(1);
+                            hashes[compositeId] = hash;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération des hash pour {tableName}");
+            }
+
+            return hashes;
+        }
+
+        private static async Task<HashSet<string>> GetExistingOrderLineCompositeIdsAsync(MySqlConnection connection, string tableName)
+        {
+            var compositeIds = new HashSet<string>();
+
+            try
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $"SELECT composite_id FROM {tableName} WHERE composite_id IS NOT NULL AND (is_deleted = FALSE OR is_deleted IS NULL)";
+
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            var compositeId = reader.GetString(0);
+                            compositeIds.Add(compositeId);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération des IDs composites pour {tableName}");
+            }
+
+            return compositeIds;
+        }
+
+        private static async Task InsertNewOrderLineAsync(MySqlConnection connection, string tableName, string compositeId, string orderId, string lineNumber, string jsonData, string hash, string endpoint)
+        {
+            try
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    // Utiliser INSERT IGNORE pour éviter les erreurs de doublon
+                    command.CommandText = $@"
+                        INSERT IGNORE INTO {tableName} (
+                            composite_id, order_id, line_number, json_data, 
+                            api_endpoint, content_hash, first_seen_at, last_updated_at
+                        ) VALUES (
+                            @composite_id, @order_id, @line_number, @json_data, 
+                            @endpoint, @hash, NOW(), NOW()
+                        )";
+
+                    command.Parameters.AddWithValue("@composite_id", compositeId);
+                    command.Parameters.AddWithValue("@order_id", orderId);
+                    command.Parameters.AddWithValue("@line_number", lineNumber);
+                    command.Parameters.AddWithValue("@json_data", jsonData);
+                    command.Parameters.AddWithValue("@endpoint", endpoint);
+                    command.Parameters.AddWithValue("@hash", hash);
+                    await command.ExecuteNonQueryAsync();
+                }
+            }
+            catch (MySqlException ex) when (ex.Number == 1062) // Erreur de doublon
+            {
+                // Doublon détecté - probablement un doublon dans l'API
+                Console.WriteLine($"⚠️ Doublon détecté et ignoré: {compositeId}");
+                _logger.LogWarning($"Doublon ignoré pour composite_id: {compositeId}");
+            }
+        }
+
+        private static async Task UpdateExistingOrderLineAsync(MySqlConnection connection, string tableName, string compositeId, string orderId, string lineNumber, string jsonData, string hash, string endpoint)
+        {
+            using (var command = connection.CreateCommand())
+            {
+                command.CommandText = $@"
+                    UPDATE {tableName} 
+                    SET json_data = @json_data, 
+                        content_hash = @hash, 
+                        last_updated_at = NOW(),
+                        update_count = update_count + 1,
+                        is_deleted = FALSE
+                    WHERE composite_id = @composite_id";
+
+                command.Parameters.AddWithValue("@composite_id", compositeId);
+                command.Parameters.AddWithValue("@json_data", jsonData);
+                command.Parameters.AddWithValue("@hash", hash);
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+
+        private static async Task TouchOrderLineAsync(MySqlConnection connection, string tableName, string compositeId)
+        {
+            try
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $@"
+                        UPDATE {tableName} 
+                        SET last_updated_at = NOW(),
+                            is_deleted = FALSE
+                        WHERE composite_id = @composite_id";
+
+                    command.Parameters.AddWithValue("@composite_id", compositeId);
+                    await command.ExecuteNonQueryAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors du touch pour {tableName}, composite_id: {compositeId}");
+            }
+        }
+
+        private static async Task MarkOrderLineAsDeletedAsync(MySqlConnection connection, string tableName, string compositeId)
+        {
+            try
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $@"
+                        UPDATE {tableName} 
+                        SET is_deleted = TRUE, 
+                            deleted_at = NOW(), 
+                            last_updated_at = NOW()
+                        WHERE composite_id = @composite_id";
+
+                    command.Parameters.AddWithValue("@composite_id", compositeId);
+                    await command.ExecuteNonQueryAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors du marquage de suppression pour {tableName}, composite_id: {compositeId}");
+            }
+        }
+
+        // ========================================
+        // SYNCHRONISATION DES ARTICLES
+        // ========================================
 
         private static async Task<SyncResult> FetchAndSyncArticlesAsync(string token, string endpoint)
         {
@@ -353,6 +794,10 @@ namespace DynamicsApiToDatabase
                 throw;
             }
         }
+
+        // ========================================
+        // NOUVELLES MÉTHODES POUR LA GESTION DES BALISES
+        // ========================================
 
         private static async Task<Dictionary<string, ArticleTagInfo>> AnalyzeAndUpdateArticleTagsAsync(JsonElement[] articles)
         {
@@ -631,7 +1076,7 @@ namespace DynamicsApiToDatabase
         }
 
         // ========================================
-        // MÉTHODES EXISTANTES CONSERVÉES
+        // MÉTHODES EXISTANTES POUR ARTICLES
         // ========================================
 
         private static async Task<HashSet<string>> GetExistingArticleIdsAsync(MySqlConnection connection)
@@ -660,44 +1105,6 @@ namespace DynamicsApiToDatabase
             }
 
             return itemIds;
-        }
-
-        private static async Task<string> GetArticleHashAsync(MySqlConnection connection, string itemId)
-        {
-            try
-            {
-                using (var command = connection.CreateCommand())
-                {
-                    command.CommandText = "SELECT content_hash FROM articles_raw WHERE item_id = @item_id";
-                    command.Parameters.AddWithValue("@item_id", itemId);
-
-                    var result = await command.ExecuteScalarAsync();
-                    return result?.ToString();
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Erreur lors de la récupération du hash pour {itemId}");
-                return null;
-            }
-        }
-
-        private static async Task ForceUpdateArticleAsync(MySqlConnection connection, string itemId, string jsonData, string hash, string endpoint)
-        {
-            using (var command = connection.CreateCommand())
-            {
-                command.CommandText = @"
-                    UPDATE articles_raw 
-                    SET json_data = @json_data, 
-                        content_hash = @hash, 
-                        last_updated_at = NOW()
-                    WHERE item_id = @item_id";
-
-                command.Parameters.AddWithValue("@json_data", jsonData);
-                command.Parameters.AddWithValue("@hash", hash);
-                command.Parameters.AddWithValue("@item_id", itemId);
-                await command.ExecuteNonQueryAsync();
-            }
         }
 
         private static async Task TouchArticleAsync(MySqlConnection connection, string itemId)
@@ -759,8 +1166,8 @@ namespace DynamicsApiToDatabase
                     {
                         while (await reader.ReadAsync())
                         {
-                            var itemId = reader.GetString(0); // index 0 pour item_id
-                            var hash = reader.GetString(1);   // index 1 pour content_hash
+                            var itemId = reader.GetString(0);
+                            var hash = reader.GetString(1);
                             hashes[itemId] = hash;
                         }
                     }
@@ -816,6 +1223,10 @@ namespace DynamicsApiToDatabase
                 return Convert.ToBase64String(hashBytes);
             }
         }
+
+        // ========================================
+        // CRÉATION DE LA BASE DE DONNÉES ET DES TABLES
+        // ========================================
 
         private static bool CreateDatabaseIfNotExists()
         {
@@ -893,23 +1304,6 @@ namespace DynamicsApiToDatabase
                         command.ExecuteNonQuery();
                     }
 
-                    // Création de la table d'historique des modifications
-                    using (var command = connection.CreateCommand())
-                    {
-                        command.CommandText = @"
-                            CREATE TABLE IF NOT EXISTS articles_history (
-                                id INT AUTO_INCREMENT PRIMARY KEY,
-                                item_id VARCHAR(50),
-                                old_json_data JSON,
-                                new_json_data JSON,
-                                change_type ENUM('INSERT', 'UPDATE') DEFAULT 'UPDATE',
-                                changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                INDEX idx_item_id (item_id),
-                                INDEX idx_changed_at (changed_at)
-                            )";
-                        command.ExecuteNonQuery();
-                    }
-
                     // Création de la table des balises d'articles
                     using (var command = connection.CreateCommand())
                     {
@@ -929,6 +1323,9 @@ namespace DynamicsApiToDatabase
                             )";
                         command.ExecuteNonQuery();
                     }
+
+                    // Création des tables de commandes avec support des lignes multiples
+                    CreateOrderTables(connection);
                 }
 
                 _logger.LogInformation("✓ Base de données et tables créées/vérifiées");
@@ -942,6 +1339,53 @@ namespace DynamicsApiToDatabase
                 return false;
             }
         }
+
+        private static void CreateOrderTables(MySqlConnection connection)
+        {
+            var orderTables = new[]
+            {
+                new { TableName = "return_orders_raw", DisplayName = "Commandes de Retour" },
+                new { TableName = "purch_orders_raw", DisplayName = "Commandes d Achat" },
+                new { TableName = "transfer_orders_raw", DisplayName = "Ordres de Transfert" }
+            };
+
+            foreach (var table in orderTables)
+            {
+                using (var command = connection.CreateCommand())
+                {
+                    command.CommandText = $@"
+                        CREATE TABLE IF NOT EXISTS {table.TableName} (
+                            id INT AUTO_INCREMENT PRIMARY KEY,
+                            composite_id VARCHAR(100) NOT NULL,
+                            order_id VARCHAR(50) NOT NULL,
+                            line_number VARCHAR(20) NOT NULL,
+                            json_data JSON NOT NULL,
+                            content_hash VARCHAR(255) NOT NULL,
+                            api_endpoint VARCHAR(255) NOT NULL,
+                            first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            update_count INT DEFAULT 0,
+                            is_deleted BOOLEAN DEFAULT FALSE,
+                            deleted_at TIMESTAMP NULL,
+                            INDEX idx_composite_id (composite_id),
+                            INDEX idx_order_id (order_id),
+                            INDEX idx_line_number (line_number),
+                            INDEX idx_content_hash (content_hash),
+                            INDEX idx_api_endpoint (api_endpoint),
+                            INDEX idx_last_updated (last_updated_at),
+                            INDEX idx_is_deleted (is_deleted),
+                            UNIQUE KEY unique_composite_id (composite_id)
+                        )";
+                    command.ExecuteNonQuery();
+                }
+
+                Console.WriteLine($"✓ Table {table.DisplayName} créée/vérifiée avec support lignes multiples");
+            }
+        }
+
+        // ========================================
+        // MÉTHODES DE LOGGING
+        // ========================================
 
         private static void LogSyncResult(string endpoint, string status, SyncResult result, long executionTimeMs)
         {
@@ -964,25 +1408,13 @@ namespace DynamicsApiToDatabase
                     {
                         command.CommandText = @"
                             INSERT INTO sync_logs (
-                                endpoint, 
-                                status, 
-                                total_articles_processed, 
-                                new_articles, 
-                                updated_articles, 
-                                unchanged_articles, 
-                                error_count, 
-                                message, 
-                                execution_time_ms
+                                endpoint, status, total_articles_processed, new_articles, 
+                                updated_articles, unchanged_articles, error_count, 
+                                message, execution_time_ms
                             ) VALUES (
-                                @endpoint, 
-                                @status, 
-                                @total_articles_processed, 
-                                @new_articles, 
-                                @updated_articles, 
-                                @unchanged_articles, 
-                                @error_count, 
-                                @message, 
-                                @execution_time
+                                @endpoint, @status, @total_articles_processed, @new_articles, 
+                                @updated_articles, @unchanged_articles, @error_count, 
+                                @message, @execution_time
                             )";
 
                         command.Parameters.AddWithValue("@endpoint", endpoint);
@@ -1004,7 +1436,6 @@ namespace DynamicsApiToDatabase
             }
         }
 
-        // Méthode de logging simple pour les erreurs
         private static void LogSyncError(string endpoint, string message, long executionTimeMs)
         {
             try
@@ -1026,33 +1457,14 @@ namespace DynamicsApiToDatabase
                     {
                         command.CommandText = @"
                            INSERT INTO sync_logs (
-                               endpoint, 
-                               status, 
-                               total_articles_processed, 
-                               new_articles, 
-                               updated_articles, 
-                               unchanged_articles, 
-                               error_count, 
-                               message, 
-                               execution_time_ms
+                               endpoint, status, total_articles_processed, new_articles, 
+                               updated_articles, unchanged_articles, error_count, 
+                               message, execution_time_ms
                            ) VALUES (
-                                    @endpoint, 
-                                    'ERROR', 
-                                    @total_articles_processed, 
-                                    @new_articles, 
-                                    @updated_articles, 
-                                    @unchanged_articles, 
-                                    @error_count, 
-                                    @message, 
-                                    @execution_time
-                                )";
+                               @endpoint, 'ERROR', 0, 0, 0, 0, 1, @message, @execution_time
+                           )";
 
                         command.Parameters.AddWithValue("@endpoint", endpoint);
-                        command.Parameters.AddWithValue("@total_articles_processed", 0);
-                        command.Parameters.AddWithValue("@new_articles", 0);
-                        command.Parameters.AddWithValue("@updated_articles", 0);
-                        command.Parameters.AddWithValue("@unchanged_articles", 0);
-                        command.Parameters.AddWithValue("@error_count", 1);
                         command.Parameters.AddWithValue("@message", message);
                         command.Parameters.AddWithValue("@execution_time", executionTimeMs);
                         command.ExecuteNonQuery();
@@ -1064,11 +1476,11 @@ namespace DynamicsApiToDatabase
                 _logger.LogError(ex, "Erreur lors de l'enregistrement du log d'erreur");
             }
         }
-    }
 
-    // ========================================
-    // CLASSES DE SUPPORT
-    // ========================================
+        // ========================================
+        // CLASSES DE SUPPORT
+        // ========================================
+    }
 
     public class SyncResult
     {
@@ -1077,6 +1489,26 @@ namespace DynamicsApiToDatabase
         public int UpdatedArticles { get; set; } = 0;
         public int UnchangedArticles { get; set; } = 0;
         public int ErrorCount { get; set; } = 0;
+    }
+
+    public class OrderSyncResult
+    {
+        public int TotalProcessed { get; set; } = 0;
+        public int NewOrderLines { get; set; } = 0;
+        public int UpdatedOrderLines { get; set; } = 0;
+        public int UnchangedOrderLines { get; set; } = 0;
+        public int ErrorCount { get; set; } = 0;
+        public string OrderType { get; set; } = "";
+    }
+
+    public class OrderEndpoint
+    {
+        public string Name { get; set; }
+        public string Endpoint { get; set; }
+        public string TableName { get; set; }
+        public string PrimaryKeyField { get; set; }
+        public string LineNumberField { get; set; }
+        public string DisplayName { get; set; }
     }
 
     public class TokenResponse
