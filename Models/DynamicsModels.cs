@@ -1,73 +1,66 @@
 // Fichier: Models/DynamicsModels.cs
-// Classes de données pour l'API Dynamics et la synchronisation
+// Classes de données pour l'API Dynamics et la synchronisation SQL Server
 
 using System;
+using System.Text.Json.Serialization;
 
 namespace DynamicsApiToDatabase.Models
 {
     /// <summary>
-    /// Réponse d'authentification de l'API Dynamics
+    /// Configuration d'un endpoint à synchroniser
     /// </summary>
-    public class TokenResponse
+    public class EndpointConfig
     {
-        public string token_type { get; set; }
-        public string scope { get; set; }
-        public string expires_in { get; set; }
-        public string ext_expires_in { get; set; }
-        public string expires_on { get; set; }
-        public string not_before { get; set; }
-        public string resource { get; set; }
-        public string access_token { get; set; }
+        public string Name { get; set; } = "";
+        public string Path { get; set; } = "";
+        public string PrimaryKeyField { get; set; } = "";
+        public string DisplayName { get; set; } = "";
     }
 
     /// <summary>
-    /// Configuration d'un endpoint de commandes
-    /// </summary>
-    public class OrderEndpoint
-    {
-        public string Name { get; set; }
-        public string Endpoint { get; set; }
-        public string TableName { get; set; }
-        public string PrimaryKeyField { get; set; }
-        public string LineNumberField { get; set; }
-        public string DisplayName { get; set; }
-    }
-
-    /// <summary>
-    /// Résultat de synchronisation des articles
+    /// Résultat d'une synchronisation d'endpoint
     /// </summary>
     public class SyncResult
     {
-        public int TotalProcessed { get; set; } = 0;
-        public int NewArticles { get; set; } = 0;
-        public int UpdatedArticles { get; set; } = 0;
-        public int UnchangedArticles { get; set; } = 0;
-        public int ErrorCount { get; set; } = 0;
+        public string EndpointName { get; set; } = "";
+        public int NewRecords { get; set; }
+        public int UpdatedRecords { get; set; }
+        public int UnchangedRecords { get; set; }
+        public int DeletedRecords { get; set; }
+        public int ErrorRecords { get; set; }
+        public TimeSpan Duration { get; set; }
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
+
+        public int TotalProcessed => NewRecords + UpdatedRecords + UnchangedRecords;
+
+        public double SuccessRate => TotalProcessed > 0 ?
+            (double)(TotalProcessed - ErrorRecords) / TotalProcessed * 100 : 0;
+
+        public string GetSummary()
+        {
+            var status = Success ? "✅" : "❌";
+            return $"{status} {EndpointName}: {NewRecords} nouveaux, {UpdatedRecords} modifiés, " +
+                   $"{UnchangedRecords} inchangés, {DeletedRecords} supprimés, {ErrorRecords} erreurs " +
+                   $"({Duration.TotalSeconds:F1}s, {SuccessRate:F1}% succès)";
+        }
     }
 
     /// <summary>
-    /// Résultat de synchronisation des commandes
+    /// Statistiques de la table JSON_IN
     /// </summary>
-    public class OrderSyncResult
+    public class JsonInStatistics
     {
-        public int TotalProcessed { get; set; } = 0;
-        public int NewOrderLines { get; set; } = 0;
-        public int UpdatedOrderLines { get; set; } = 0;
-        public int UnchangedOrderLines { get; set; } = 0;
-        public int ErrorCount { get; set; } = 0;
-        public string OrderType { get; set; } = "";
-    }
+        public int TotalRecords { get; set; }
+        public int ActiveRecords { get; set; }
+        public int DeletedRecords { get; set; }
+        public int UpdatedLast24h { get; set; }
 
-    /// <summary>
-    /// Information sur les balises d'articles détectées
-    /// </summary>
-    public class ArticleTagInfo
-    {
-        public string TagName { get; set; }
-        public string DataType { get; set; }
-        public DateTime FirstSeen { get; set; }
-        public DateTime LastSeen { get; set; }
-        public int OccurrenceCount { get; set; }
-        public string SampleValue { get; set; }
+        public string GetSummary()
+        {
+            var activePercent = TotalRecords > 0 ? (double)ActiveRecords / TotalRecords * 100 : 0;
+            return $"Total: {TotalRecords:N0}, Actifs: {ActiveRecords:N0} ({activePercent:F1}%), " +
+                   $"Supprimés: {DeletedRecords:N0}, Maj 24h: {UpdatedLast24h:N0}";
+        }
     }
 }

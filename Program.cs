@@ -1,6 +1,4 @@
-﻿// Fichier: Program.cs (modifié pour SQL Server et table JSON_IN)
-// Point d'entrée principal - Orchestration avec SQL Server
-
+﻿
 using System;
 using System.Diagnostics;
 using System.Net.Http;
@@ -9,7 +7,8 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using DynamicsApiToDatabase.Services;
-using System.Data;
+using DynamicsApiToDatabase.Models;
+using System.Linq;
 
 namespace DynamicsApiToDatabase
 {
@@ -18,7 +17,9 @@ namespace DynamicsApiToDatabase
         static async Task Main(string[] args)
         {
             Console.WriteLine("=== API_BIOR - Synchronisation Dynamics 365 vers SQL Server ===");
-            Console.WriteLine("Version SQL Server - Table JSON_IN\n");
+            Console.WriteLine("Version SQL Server - Table JSON_IN");
+            Console.WriteLine("Base de données: 7.2.160.173 - Middleware");
+            Console.WriteLine("Client: BR | Environnement: SPEED\n");
 
             try
             {
@@ -29,11 +30,15 @@ namespace DynamicsApiToDatabase
                 // Initialisation
                 var globalStopwatch = Stopwatch.StartNew();
 
+                // Affichage de la configuration
+                await DisplayConfigurationAsync(serviceProvider);
+
                 // Vérification de la base de données SQL Server
                 var sqlServerService = serviceProvider.GetService<SqlServerDatabaseService>();
                 if (!await sqlServerService.InitializeDatabaseAsync())
                 {
                     Console.WriteLine("❌ Impossible d'initialiser la base de données SQL Server");
+                    Console.WriteLine("Vérifiez la connexion vers 7.2.160.173");
                     return;
                 }
 
@@ -41,92 +46,59 @@ namespace DynamicsApiToDatabase
                 var authService = serviceProvider.GetService<AuthenticationService>();
                 if (!authService.ValidateConfiguration())
                 {
-                    Console.WriteLine("❌ Configuration invalide");
+                    Console.WriteLine("❌ Configuration Azure AD invalide");
+                    Console.WriteLine("Vérifiez TenantId, ClientId et ClientSecret dans appsettings.json");
                     return;
                 }
 
                 var token = await authService.GetAccessTokenAsync();
                 if (string.IsNullOrEmpty(token))
                 {
-                    Console.WriteLine("❌ Impossible d'obtenir le token d'authentification");
+                    Console.WriteLine("❌ Impossible d'obtenir le token d'authentification Azure");
                     return;
                 }
 
-                Console.WriteLine("✅ Authentification réussie\n");
+                Console.WriteLine("✅ Authentification Azure réussie\n");
 
                 // Service de synchronisation des données
                 var dataService = serviceProvider.GetService<DynamicsDataService>();
 
-                // Liste des endpoints à synchroniser
-                var endpoints = new[]
-                {
-                    new { Name = "Articles", Endpoint = "data/BRINT34ReleasedProducts" },
-                    new { Name = "Commandes de Retour", Endpoint = "data/BRINT32ReturnOrderTables" },
-                    new { Name = "Commandes d'Achat", Endpoint = "data/BRINT32PurchOrderTables" },
-                    new { Name = "Ordres de Transfert", Endpoint = "data/BRINT32TransferOrderTables" }
-                };
+                // Affichage des statistiques avant synchronisation
+                await DisplayPreSyncStatisticsAsync(sqlServerService);
 
-                // Synchronisation de chaque endpoint
-                foreach (var endpoint in endpoints)
-                {
-                    Console.WriteLine($"\n🔄 === Synchronisation {endpoint.Name} ===");
+                // Synchronisation de tous les endpoints
+                Console.WriteLine("🚀 === DÉBUT SYNCHRONISATION === 🚀\n");
 
-                    try
-                    {
-                        // Récupérer les données de l'API
-                        var data = await dataService.GetDataFromEndpointAsync(token, endpoint.Endpoint);
+                var syncResults = await dataService.SyncAllEndpointsAsync();
 
-                        if (data?.Length > 0)
-                        {
-                            Console.WriteLine($"📥 {data.Length} enregistrements récupérés de l'API");
-
-                            // Insérer/mettre à jour dans SQL Server
-                            var result = await sqlServerService.InsertOrUpdateJsonDataAsync(endpoint.Endpoint, data);
-
-                            // Marquer les enregistrements supprimés
-                            var deletedCount = await sqlServerService.MarkDeletedRecordsAsync(endpoint.Endpoint, data);
-                            result.DeletedRecords = deletedCount;
-
-                            // Afficher le résumé
-                            Console.WriteLine($"📊 Résumé {endpoint.Name}:");
-                            Console.WriteLine($"   ✅ {result.NewRecords} nouveaux");
-                            Console.WriteLine($"   🔄 {result.UpdatedRecords} mis à jour");
-                            Console.WriteLine($"   ⚪ {result.UnchangedRecords} inchangés");
-                            if (result.DeletedRecords > 0)
-                                Console.WriteLine($"   🗑️ {result.DeletedRecords} supprimés");
-                        }
-                        else
-                        {
-                            Console.WriteLine("⚠️ Aucune donnée récupérée de l'API");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"❌ Erreur lors de la synchronisation {endpoint.Name}: {ex.Message}");
-                    }
-                }
+                // Affichage des résultats
+                Console.WriteLine("\n📊 === RÉSULTATS DE SYNCHRONISATION === 📊");
+                await DisplaySyncResultsAsync(syncResults, sqlServerService);
 
                 globalStopwatch.Stop();
-                Console.WriteLine($"\n🎉 === Synchronisation terminée en {globalStopwatch.Elapsed.TotalSeconds:F1}s ===");
-
-                // Affichage des statistiques finales
-                await DisplayFinalStatsAsync(sqlServerService);
+                Console.WriteLine($"\n⏱️ Durée totale: {globalStopwatch.Elapsed.TotalMinutes:F1} minutes");
+                Console.WriteLine("✅ === SYNCHRONISATION TERMINÉE === ✅");
 
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"\n💥 Erreur critique: {ex.Message}");
-                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+                Console.WriteLine($"\n❌ ERREUR CRITIQUE: {ex.Message}");
+                Console.WriteLine($"Détails: {ex}");
+                Environment.Exit(1);
             }
 
-            Console.WriteLine("\nAppuyez sur une touche pour quitter...");
-            Console.ReadKey();
+            // Attendre une entrée utilisateur avant de fermer (utile en développement)
+            if (Debugger.IsAttached)
+            {
+                Console.WriteLine("\nAppuyez sur une touche pour fermer...");
+                Console.ReadKey();
+            }
         }
 
         /// <summary>
-        /// Configure les services pour l'injection de dépendances
+        /// Configure tous les services de l'application
         /// </summary>
-        private static ServiceCollection ConfigureServices()
+        private static IServiceCollection ConfigureServices()
         {
             var services = new ServiceCollection();
 
@@ -134,107 +106,134 @@ namespace DynamicsApiToDatabase
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+                .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
                 .AddEnvironmentVariables()
                 .Build();
 
             services.AddSingleton<IConfiguration>(configuration);
 
             // Logging
-            services.AddLogging(builder =>
-            {
-                builder.AddConsole();
-                builder.SetMinimumLevel(LogLevel.Information);
-            });
+            services.AddApplicationLogging();
 
-            // HTTP Client
-            services.AddHttpClient();
-
-            // Services personnalisés
-            services.AddSingleton<AuthenticationService>();
-            services.AddSingleton<SqlServerDatabaseService>();
-            services.AddSingleton<DynamicsDataService>();
+            // Services de l'application
+            services.AddApplicationServices(configuration);
 
             return services;
         }
 
         /// <summary>
-        /// Affiche les statistiques finales de la synchronisation
+        /// Affiche la configuration actuelle
         /// </summary>
-        private static async Task DisplayFinalStatsAsync(SqlServerDatabaseService sqlServerService)
+        private static async Task DisplayConfigurationAsync(ServiceProvider serviceProvider)
+        {
+            var configuration = serviceProvider.GetService<IConfiguration>();
+
+            Console.WriteLine("📋 === CONFIGURATION === 📋");
+            Console.WriteLine($"🏢 Tenant ID: {MaskSensitiveData(configuration["TenantId"])}");
+            Console.WriteLine($"🔑 Client ID: {MaskSensitiveData(configuration["ClientId"])}");
+            Console.WriteLine($"🌐 Resource URL: {configuration["ResourceUrl"]}");
+            Console.WriteLine($"🗄️ Base de données: {ExtractServerFromConnectionString(configuration.GetConnectionString("DefaultConnection"))}");
+            Console.WriteLine($"📅 Date/Heure: {DateTime.Now:dd/MM/yyyy HH:mm:ss}");
+            Console.WriteLine();
+        }
+
+        /// <summary>
+        /// Affiche les statistiques avant synchronisation
+        /// </summary>
+        private static async Task DisplayPreSyncStatisticsAsync(SqlServerDatabaseService sqlServerService)
         {
             try
             {
-                Console.WriteLine("\n📈 === Statistiques de la base JSON_IN ===");
+                var stats = await sqlServerService.GetStatisticsAsync();
 
-                using var connection = new Microsoft.Data.SqlClient.SqlConnection(GetConnectionString());
-                await connection.OpenAsync();
-
-                // Compter par endpoint
-                var countByEndpointSql = @"
-                    SELECT JSON_FROM, JSON_STAT, COUNT(*) as Count
-                    FROM JSON_IN 
-                    GROUP BY JSON_FROM, JSON_STAT
-                    ORDER BY JSON_FROM, JSON_STAT";
-
-                using var command = new Microsoft.Data.SqlClient.SqlCommand(countByEndpointSql, connection);
-                using var reader = await command.ExecuteReaderAsync();
-
-                var stats = new Dictionary<string, Dictionary<string, int>>();
-
-                while (await reader.ReadAsync())
-                {
-                    var endpoint = reader.GetString("JSON_FROM");
-                    var status = reader.GetString("JSON_STAT");
-                    var count = reader.GetInt32("Count");
-
-                    if (!stats.ContainsKey(endpoint))
-                        stats[endpoint] = new Dictionary<string, int>();
-
-                    stats[endpoint][status] = count;
-                }
-
-                foreach (var endpoint in stats)
-                {
-                    Console.WriteLine($"\n🔗 {endpoint.Key}:");
-                    foreach (var status in endpoint.Value)
-                    {
-                        var icon = status.Key switch
-                        {
-                            "ACTIVE" => "✅",
-                            "DELETED" => "🗑️",
-                            "EXPORTED" => "📤",
-                            _ => "⚪"
-                        };
-                        Console.WriteLine($"   {icon} {status.Key}: {status.Value}");
-                    }
-                }
+                Console.WriteLine("📈 === STATISTIQUES ACTUELLES JSON_IN === 📈");
+                Console.WriteLine($"📦 Total enregistrements: {stats.TotalRecords:N0}");
+                Console.WriteLine($"✅ Enregistrements actifs: {stats.ActiveRecords:N0}");
+                Console.WriteLine($"🗑️ Enregistrements supprimés: {stats.DeletedRecords:N0}");
+                Console.WriteLine($"🔄 Mis à jour dernières 24h: {stats.UpdatedLast24h:N0}");
+                Console.WriteLine();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"⚠️ Impossible d'afficher les statistiques: {ex.Message}");
+                Console.WriteLine($"⚠️ Impossible de récupérer les statistiques: {ex.Message}\n");
             }
         }
 
         /// <summary>
-        /// Récupère la chaîne de connexion (méthode utilitaire)
+        /// Affiche les résultats de synchronisation
         /// </summary>
-        private static string GetConnectionString()
+        private static async Task DisplaySyncResultsAsync(List<DynamicsApiToDatabase.Models.SyncResult> syncResults, SqlServerDatabaseService sqlServerService)
         {
-            var configuration = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json")
-                .Build();
-
-            var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder
+            foreach (var result in syncResults)
             {
-                DataSource = $"{configuration["Database:Host"]},{configuration.GetValue<int>("Database:Port", 1433)}",
-                InitialCatalog = configuration["Database:Name"],
-                UserID = configuration["Database:User"],
-                Password = configuration["Database:Password"],
-                TrustServerCertificate = true
-            };
+                var status = result.Success ? "✅" : "❌";
+                Console.WriteLine($"{status} {result.EndpointName}:");
+                Console.WriteLine($"   📥 Nouveaux: {result.NewRecords}");
+                Console.WriteLine($"   🔄 Modifiés: {result.UpdatedRecords}");
+                Console.WriteLine($"   ➖ Inchangés: {result.UnchangedRecords}");
+                Console.WriteLine($"   🗑️ Supprimés: {result.DeletedRecords}");
+                Console.WriteLine($"   ⚠️ Erreurs: {result.ErrorRecords}");
+                Console.WriteLine($"   ⏱️ Durée: {result.Duration.TotalSeconds:F1}s");
 
-            return builder.ConnectionString;
+                if (!result.Success)
+                {
+                    Console.WriteLine($"   💥 Erreur: {result.ErrorMessage}");
+                }
+                Console.WriteLine();
+            }
+
+            // Statistiques globales après synchronisation
+            try
+            {
+                var finalStats = await sqlServerService.GetStatisticsAsync();
+
+                Console.WriteLine("📊 === STATISTIQUES FINALES === 📊");
+                Console.WriteLine($"📦 Total enregistrements: {finalStats.TotalRecords:N0}");
+                Console.WriteLine($"✅ Enregistrements actifs: {finalStats.ActiveRecords:N0}");
+                Console.WriteLine($"🗑️ Enregistrements supprimés: {finalStats.DeletedRecords:N0}");
+
+                var totalProcessed = syncResults.Sum(r => r.NewRecords + r.UpdatedRecords + r.UnchangedRecords);
+                var totalErrors = syncResults.Sum(r => r.ErrorRecords);
+                var successRate = totalProcessed > 0 ? (double)(totalProcessed - totalErrors) / totalProcessed * 100 : 0;
+
+                Console.WriteLine($"📈 Taux de succès: {successRate:F1}%");
+                Console.WriteLine($"🎯 Enregistrements traités: {totalProcessed:N0}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Impossible de récupérer les statistiques finales: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Masque les données sensibles pour l'affichage
+        /// </summary>
+        private static string MaskSensitiveData(string? data)
+        {
+            if (string.IsNullOrEmpty(data) || data.Length <= 8)
+                return "***";
+
+            return data[..4] + "***" + data[^4..];
+        }
+
+        /// <summary>
+        /// Extrait le serveur de la chaîne de connexion pour l'affichage
+        /// </summary>
+        private static string ExtractServerFromConnectionString(string? connectionString)
+        {
+            if (string.IsNullOrEmpty(connectionString))
+                return "Non configuré";
+
+            try
+            {
+                var parts = connectionString.Split(';');
+                var serverPart = parts.FirstOrDefault(p => p.StartsWith("Server=", StringComparison.OrdinalIgnoreCase));
+                return serverPart?.Split('=')[1] ?? "Inconnu";
+            }
+            catch
+            {
+                return "Format invalide";
+            }
         }
     }
 
@@ -253,11 +252,12 @@ namespace DynamicsApiToDatabase
             services.AddScoped<SqlServerDatabaseService>();
             services.AddScoped<DynamicsDataService>();
 
-            // Configuration HTTP Client avec retry policy
+            // Configuration HTTP Client avec retry policy et timeout étendu
             services.AddHttpClient<DynamicsDataService>(client =>
             {
-                client.Timeout = TimeSpan.FromMinutes(10);
-                client.DefaultRequestHeaders.Add("User-Agent", "API_BioR/1.0");
+                client.Timeout = TimeSpan.FromMinutes(15); // Timeout plus long pour les grandes synchronisations
+                client.DefaultRequestHeaders.Add("User-Agent", "API_BioR/2.0-SQLServer");
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
             });
 
             return services;
@@ -276,112 +276,16 @@ namespace DynamicsApiToDatabase
                     options.TimestampFormat = "[yyyy-MM-dd HH:mm:ss] ";
                 });
 
+                // Filtrer les logs de Microsoft et System pour réduire le bruit
                 builder.AddFilter("Microsoft", LogLevel.Warning);
                 builder.AddFilter("System", LogLevel.Warning);
+                builder.AddFilter("Microsoft.Extensions.Http", LogLevel.Warning);
+
+                // Niveau de log pour l'application
                 builder.SetMinimumLevel(LogLevel.Information);
             });
 
             return services;
-        }
-    }
-
-    /// <summary>
-    /// Modèles pour les statistiques et résultats
-    /// </summary>
-    public class SyncStatistics
-    {
-        public string Endpoint { get; set; } = "";
-        public int NewRecords { get; set; }
-        public int UpdatedRecords { get; set; }
-        public int UnchangedRecords { get; set; }
-        public int DeletedRecords { get; set; }
-        public TimeSpan Duration { get; set; }
-        public bool Success { get; set; }
-        public string? ErrorMessage { get; set; }
-
-        public int TotalProcessed => NewRecords + UpdatedRecords + UnchangedRecords;
-
-        public override string ToString()
-        {
-            if (!Success)
-                return $"❌ {Endpoint}: Erreur - {ErrorMessage}";
-
-            return $"✅ {Endpoint}: {NewRecords} nouveaux, {UpdatedRecords} MAJ, {UnchangedRecords} inchangés, {DeletedRecords} supprimés ({Duration.TotalSeconds:F1}s)";
-        }
-    }
-
-    /// <summary>
-    /// Configuration des endpoints à synchroniser
-    /// </summary>
-    public static class EndpointConfiguration
-    {
-        public static readonly (string Name, string Endpoint, string Description)[] SyncEndpoints =
-        {
-            ("Articles", "data/BRINT34ReleasedProducts", "Référentiel des produits"),
-            ("Commandes de Retour", "data/BRINT32ReturnOrderTables", "Lignes de commandes de retour"),
-            ("Commandes d'Achat", "data/BRINT32PurchOrderTables", "Lignes de commandes d'achat"),
-            ("Ordres de Transfert", "data/BRINT32TransferOrderTables", "Lignes d'ordres de transfert")
-        };
-
-        /// <summary>
-        /// Retourne la configuration d'un endpoint spécifique
-        /// </summary>
-        public static (string Name, string Endpoint, string Description)? GetEndpointConfig(string endpointName)
-        {
-            return SyncEndpoints.FirstOrDefault(e => e.Name.Equals(endpointName, StringComparison.OrdinalIgnoreCase));
-        }
-
-        /// <summary>
-        /// Retourne tous les noms d'endpoints disponibles
-        /// </summary>
-        public static string[] GetAvailableEndpointNames()
-        {
-            return SyncEndpoints.Select(e => e.Name).ToArray();
-        }
-    }
-
-    /// <summary>
-    /// Utilitaires pour l'affichage console
-    /// </summary>
-    public static class ConsoleHelper
-    {
-        public static void WriteHeader(string title)
-        {
-            Console.WriteLine();
-            Console.WriteLine($"🔷 === {title} ===");
-        }
-
-        public static void WriteSuccess(string message)
-        {
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine($"✅ {message}");
-            Console.ResetColor();
-        }
-
-        public static void WriteError(string message)
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"❌ {message}");
-            Console.ResetColor();
-        }
-
-        public static void WriteWarning(string message)
-        {
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine($"⚠️ {message}");
-            Console.ResetColor();
-        }
-
-        public static void WriteInfo(string message)
-        {
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine($"ℹ️ {message}");
-            Console.ResetColor();
-        }
-
-        public static void WriteSeparator()
-        {
-            Console.WriteLine(new string('-', 80));
         }
     }
 }
