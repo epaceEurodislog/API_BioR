@@ -23,8 +23,8 @@
     <PackageReference Include="Microsoft.Extensions.Logging" Version="8.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.0" />
 
-    <!-- Base de données MySQL -->
-    <PackageReference Include="MySql.Data" Version="8.0.33" />
+    <!-- Base de données SQL Server (remplace MySQL) -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.1.1" />
 
     <!-- HTTP Client -->
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
