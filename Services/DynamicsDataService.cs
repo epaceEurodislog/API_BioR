@@ -1,3 +1,6 @@
+// Fichier: Services/DynamicsDataService.cs
+// Service de synchronisation avec confirmation de réception
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -17,6 +20,7 @@ namespace DynamicsApiToDatabase.Services
         private readonly HttpClient _httpClient;
         private readonly AuthenticationService _authService;
         private readonly SqlServerDatabaseService _databaseService;
+        private readonly StatusConfirmationService _statusConfirmationService;
         private readonly IConfiguration _configuration;
         private readonly ILogger<DynamicsDataService> _logger;
         private readonly string _baseUrl;
@@ -25,19 +29,21 @@ namespace DynamicsApiToDatabase.Services
             HttpClient httpClient,
             AuthenticationService authService,
             SqlServerDatabaseService databaseService,
+            StatusConfirmationService statusConfirmationService,
             IConfiguration configuration,
             ILogger<DynamicsDataService> logger)
         {
             _httpClient = httpClient;
             _authService = authService;
             _databaseService = databaseService;
+            _statusConfirmationService = statusConfirmationService;
             _configuration = configuration;
             _logger = logger;
             _baseUrl = configuration["ResourceUrl"] ?? throw new ArgumentNullException("ResourceUrl manquante");
         }
 
         /// <summary>
-        /// Synchronise un endpoint spécifique vers la table JSON_IN
+        /// Synchronise un endpoint spécifique vers la table JSON_IN avec confirmation de réception
         /// </summary>
         public async Task<SyncResult> SyncEndpointAsync(string endpointName, string endpointPath, string primaryKeyField = "ItemId")
         {
@@ -70,28 +76,33 @@ namespace DynamicsApiToDatabase.Services
 
                 // Traiter chaque enregistrement
                 var currentKeys = new List<string>();
-                var tasks = new List<Task>();
+                var confirmedItems = new List<string>(); // Pour stocker les articles confirmés
 
                 foreach (var item in apiData)
                 {
                     var uniqueKey = GenerateUniqueKey(item, primaryKeyField, endpointName);
                     currentKeys.Add(uniqueKey);
 
-                    // Traitement en batch pour éviter la surcharge
-                    tasks.Add(ProcessSingleRecordAsync(uniqueKey, item, endpointPath, result));
+                    // Traiter l'enregistrement
+                    var processResult = await ProcessSingleRecordAsync(uniqueKey, item, endpointPath, result);
 
-                    // Traiter par batch de 50 pour éviter trop de connexions simultanées
-                    if (tasks.Count >= 50)
+                    // Si c'est un article et qu'il a été traité avec succès, ajouter à la liste de confirmation
+                    if (processResult.Success && endpointName.ToUpper() == "ARTICLES")
                     {
-                        await Task.WhenAll(tasks);
-                        tasks.Clear();
+                        var itemId = ExtractItemId(item);
+                        if (!string.IsNullOrEmpty(itemId))
+                        {
+                            confirmedItems.Add(itemId);
+                        }
                     }
                 }
 
-                // Traiter les derniers enregistrements
-                if (tasks.Any())
+                // Confirmer la réception des articles (seulement pour les articles)
+                if (confirmedItems.Count > 0)
                 {
-                    await Task.WhenAll(tasks);
+                    _logger.LogInformation($"📤 Confirmation de réception pour {confirmedItems.Count} articles...");
+                    var confirmationCount = await _statusConfirmationService.ConfirmMultipleItemsReceivedAsync(token, confirmedItems);
+                    _logger.LogInformation($"✅ {confirmationCount}/{confirmedItems.Count} articles confirmés");
                 }
 
                 // Marquer les enregistrements supprimés
@@ -119,9 +130,9 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Traite un seul enregistrement
+        /// Traite un seul enregistrement avec retour du résultat
         /// </summary>
-        private async Task ProcessSingleRecordAsync(string uniqueKey, JsonElement item, string endpointPath, SyncResult result)
+        private async Task<ProcessResult> ProcessSingleRecordAsync(string uniqueKey, JsonElement item, string endpointPath, SyncResult result)
         {
             try
             {
@@ -130,12 +141,19 @@ namespace DynamicsApiToDatabase.Services
 
                 if (success)
                 {
-                    // Cette logique est simplifiée - en réalité, le service de base de données
-                    // devrait retourner le type d'opération effectuée
                     lock (result)
                     {
                         result.NewRecords++;
                     }
+                    return new ProcessResult { Success = true };
+                }
+                else
+                {
+                    lock (result)
+                    {
+                        result.ErrorRecords++;
+                    }
+                    return new ProcessResult { Success = false };
                 }
             }
             catch (Exception ex)
@@ -145,6 +163,27 @@ namespace DynamicsApiToDatabase.Services
                 {
                     result.ErrorRecords++;
                 }
+                return new ProcessResult { Success = false };
+            }
+        }
+
+        /// <summary>
+        /// Extrait l'ItemId d'un élément JSON
+        /// </summary>
+        private string ExtractItemId(JsonElement item)
+        {
+            try
+            {
+                if (item.TryGetProperty("ItemId", out var itemIdProperty))
+                {
+                    return itemIdProperty.GetString() ?? "";
+                }
+                return "";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Impossible d'extraire l'ItemId");
+                return "";
             }
         }
 
@@ -317,7 +356,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Retourne la liste des endpoints à synchroniser (CORRIGÉS)
+        /// Retourne la liste des endpoints à synchroniser
         /// </summary>
         private List<EndpointConfig> GetConfiguredEndpoints()
         {
@@ -357,5 +396,14 @@ namespace DynamicsApiToDatabase.Services
         {
             return await _databaseService.GetStatisticsAsync();
         }
+    }
+
+    /// <summary>
+    /// Résultat du traitement d'un enregistrement
+    /// </summary>
+    public class ProcessResult
+    {
+        public bool Success { get; set; }
+        public string? ErrorMessage { get; set; }
     }
 }

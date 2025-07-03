@@ -1,6 +1,6 @@
 // Fichier: Services/SqlServerDatabaseService.cs
 // Service de gestion de la base de données SQL Server pour la table JSON_IN
-// VERSION HONNÊTE - PAS DE COLONNES AJOUTÉES EN DOUCE !
+// VERSION COMPLÈTE avec toutes les méthodes pour les confirmations
 
 using System;
 using System.Data;
@@ -240,6 +240,283 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+        /// Récupère les IDs des articles depuis une date donnée
+        /// </summary>
+        /// <param name="fromDate">Date à partir de laquelle récupérer les articles</param>
+        /// <returns>Liste des ItemIds</returns>
+        public async Task<List<string>> GetArticleIdsFromDateAsync(DateTime fromDate)
+        {
+            var itemIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND JSON_CRDA >= @FromDate
+                    AND JSON_VALUE(JSON_DATA, '$.ItemId') IS NOT NULL
+                    ORDER BY JSON_VALUE(JSON_DATA, '$.ItemId')";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@FromDate", fromDate);
+
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var itemId = reader.GetString("ItemId");
+                    if (!string.IsNullOrEmpty(itemId))
+                    {
+                        itemIds.Add(itemId);
+                    }
+                }
+
+                _logger.LogInformation($"📊 {itemIds.Count} articles trouvés depuis le {fromDate:dd/MM/yyyy}");
+                return itemIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération des articles depuis le {fromDate:dd/MM/yyyy}");
+                return itemIds;
+            }
+        }
+
+        /// <summary>
+        /// Récupère tous les articles actifs
+        /// </summary>
+        /// <returns>Liste des ItemIds</returns>
+        public async Task<List<string>> GetAllActiveArticleIdsAsync()
+        {
+            var itemIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND JSON_VALUE(JSON_DATA, '$.ItemId') IS NOT NULL
+                    ORDER BY JSON_VALUE(JSON_DATA, '$.ItemId')";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var itemId = reader.GetString("ItemId");
+                    if (!string.IsNullOrEmpty(itemId))
+                    {
+                        itemIds.Add(itemId);
+                    }
+                }
+
+                _logger.LogInformation($"📊 {itemIds.Count} articles actifs trouvés");
+                return itemIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de la récupération des articles actifs");
+                return itemIds;
+            }
+        }
+
+        /// <summary>
+        /// Vérifie si un article existe dans la base de données
+        /// </summary>
+        /// <param name="itemId">ID de l'article</param>
+        /// <returns>True si l'article existe</returns>
+        public async Task<bool> ArticleExistsAsync(string itemId)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT COUNT(*)
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND JSON_VALUE(JSON_DATA, '$.ItemId') = @ItemId";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@ItemId", itemId);
+
+                var count = (int)await command.ExecuteScalarAsync();
+                return count > 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la vérification de l'existence de l'article {itemId}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Marque un enregistrement comme traité (pour éviter les re-confirmations)
+        /// </summary>
+        /// <param name="businessKey">Clé métier de l'enregistrement</param>
+        /// <param name="endpoint">Endpoint source</param>
+        /// <returns>True si la mise à jour a réussi</returns>
+        public async Task<bool> MarkAsProcessedAsync(string businessKey, string endpoint)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    UPDATE JSON_IN 
+                    SET JSON_STAT = 'PROCESSED'
+                    WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@BusinessKey", businessKey);
+                command.Parameters.AddWithValue("@Endpoint", endpoint);
+
+                var rowsAffected = await command.ExecuteNonQueryAsync();
+                return rowsAffected > 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors du marquage comme traité pour {businessKey}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Récupère les articles qui n'ont pas encore été confirmés
+        /// </summary>
+        /// <returns>Liste des ItemIds non confirmés</returns>
+        public async Task<List<string>> GetUnconfirmedArticleIdsAsync()
+        {
+            var itemIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND JSON_VALUE(JSON_DATA, '$.ItemId') IS NOT NULL
+                    ORDER BY JSON_VALUE(JSON_DATA, '$.ItemId')";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var itemId = reader.GetString("ItemId");
+                    if (!string.IsNullOrEmpty(itemId))
+                    {
+                        itemIds.Add(itemId);
+                    }
+                }
+
+                _logger.LogInformation($"📊 {itemIds.Count} articles non confirmés trouvés");
+                return itemIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de la récupération des articles non confirmés");
+                return itemIds;
+            }
+        }
+
+        /// <summary>
+        /// Marque un article comme confirmé (évite les re-confirmations)
+        /// </summary>
+        /// <param name="itemId">ID de l'article</param>
+        /// <returns>True si la mise à jour a réussi</returns>
+        public async Task<bool> MarkArticleAsConfirmedAsync(string itemId)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    UPDATE JSON_IN 
+                    SET JSON_STAT = 'CONFIRMED'
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    AND JSON_VALUE(JSON_DATA, '$.ItemId') = @ItemId
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@ItemId", itemId);
+
+                var rowsAffected = await command.ExecuteNonQueryAsync();
+                return rowsAffected > 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors du marquage comme confirmé pour l'article {itemId}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Récupère des statistiques détaillées sur les articles
+        /// </summary>
+        /// <returns>Statistiques des articles</returns>
+        public async Task<ArticleStatistics> GetArticleStatisticsAsync()
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT 
+                        COUNT(*) as TotalArticles,
+                        COUNT(CASE WHEN ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE' THEN 1 END) as ActiveArticles,
+                        COUNT(CASE WHEN JSON_STAT = 'CONFIRMED' THEN 1 END) as ConfirmedArticles,
+                        COUNT(CASE WHEN JSON_STAT = 'PROCESSED' THEN 1 END) as ProcessedArticles,
+                        COUNT(CASE WHEN JSON_STAT = 'DELETED' THEN 1 END) as DeletedArticles,
+                        COUNT(CASE WHEN JSON_CRDA >= DATEADD(day, -1, GETDATE()) THEN 1 END) as AddedLast24h,
+                        COUNT(CASE WHEN JSON_CRDA >= DATEADD(day, -7, GETDATE()) THEN 1 END) as AddedLast7Days
+                    FROM JSON_IN
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                if (await reader.ReadAsync())
+                {
+                    return new ArticleStatistics
+                    {
+                        TotalArticles = reader.GetInt32("TotalArticles"),
+                        ActiveArticles = reader.GetInt32("ActiveArticles"),
+                        ConfirmedArticles = reader.GetInt32("ConfirmedArticles"),
+                        ProcessedArticles = reader.GetInt32("ProcessedArticles"),
+                        DeletedArticles = reader.GetInt32("DeletedArticles"),
+                        AddedLast24h = reader.GetInt32("AddedLast24h"),
+                        AddedLast7Days = reader.GetInt32("AddedLast7Days")
+                    };
+                }
+
+                return new ArticleStatistics();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de la récupération des statistiques des articles");
+                return new ArticleStatistics();
+            }
+        }
+
+        /// <summary>
         /// Calcule un hash MD5 du contenu JSON
         /// </summary>
         private static string ComputeHash(string input)
@@ -288,6 +565,42 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogError(ex, "Erreur lors de la récupération des statistiques");
                 return new JsonInStatistics();
+            }
+        }
+
+        /// <summary>
+        /// Nettoie les anciens enregistrements supprimés
+        /// </summary>
+        /// <param name="olderThanDays">Supprimer les enregistrements supprimés plus anciens que X jours</param>
+        /// <returns>Nombre d'enregistrements supprimés</returns>
+        public async Task<int> CleanupOldDeletedRecordsAsync(int olderThanDays = 30)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    DELETE FROM JSON_IN 
+                    WHERE JSON_STAT = 'DELETED' 
+                    AND JSON_CRDA < DATEADD(day, -@OlderThanDays, GETDATE())";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@OlderThanDays", olderThanDays);
+
+                var rowsAffected = await command.ExecuteNonQueryAsync();
+
+                if (rowsAffected > 0)
+                {
+                    _logger.LogInformation($"🧹 {rowsAffected} anciens enregistrements supprimés (> {olderThanDays} jours)");
+                }
+
+                return rowsAffected;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors du nettoyage des anciens enregistrements");
+                return 0;
             }
         }
     }

@@ -1,5 +1,4 @@
-﻿
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -251,6 +250,7 @@ namespace DynamicsApiToDatabase
             services.AddScoped<AuthenticationService>();
             services.AddScoped<SqlServerDatabaseService>();
             services.AddScoped<DynamicsDataService>();
+            services.AddScoped<StatusConfirmationService>(); // ✅ SERVICE AJOUTÉ
 
             // Configuration HTTP Client avec retry policy et timeout étendu
             services.AddHttpClient<DynamicsDataService>(client =>
@@ -258,6 +258,21 @@ namespace DynamicsApiToDatabase
                 client.Timeout = TimeSpan.FromMinutes(15); // Timeout plus long pour les grandes synchronisations
                 client.DefaultRequestHeaders.Add("User-Agent", "API_BioR/2.0-SQLServer");
                 client.DefaultRequestHeaders.Add("Accept", "application/json");
+            });
+
+            // ✅ Configuration HTTP Client pour le service de confirmation
+            services.AddHttpClient<StatusConfirmationService>(client =>
+            {
+                client.Timeout = TimeSpan.FromMinutes(10);
+                client.DefaultRequestHeaders.Add("User-Agent", "API_BioR/2.0-StatusConfirmation");
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
+            });
+
+            // ✅ Configuration HTTP Client pour AuthenticationService
+            services.AddHttpClient<AuthenticationService>(client =>
+            {
+                client.Timeout = TimeSpan.FromMinutes(5);
+                client.DefaultRequestHeaders.Add("User-Agent", "API_BioR/2.0-Auth");
             });
 
             return services;
