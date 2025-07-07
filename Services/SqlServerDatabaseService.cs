@@ -1,6 +1,6 @@
 // Fichier: Services/SqlServerDatabaseService.cs
 // Service de gestion de la base de données SQL Server pour la table JSON_IN
-// VERSION COMPLÈTE avec toutes les méthodes pour les confirmations
+// VERSION COMPLÈTE avec optimisation des confirmations
 
 using System;
 using System.Data;
@@ -30,7 +30,6 @@ namespace DynamicsApiToDatabase.Services
 
         /// <summary>
         /// Initialise la base de données et vérifie seulement la connexion
-        /// PAS D'AJOUT DE COLONNES EN DOUCE !
         /// </summary>
         public async Task<bool> InitializeDatabaseAsync()
         {
@@ -65,6 +64,61 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+        /// Vérifie et ajoute la colonne JSON_SENT si elle n'existe pas
+        /// </summary>
+        public async Task<bool> EnsureConfirmationColumnExistsAsync()
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                // Vérifier si la colonne existe déjà
+                const string checkColumnSql = @"
+                    SELECT COUNT(*)
+                    FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_NAME = 'JSON_IN' 
+                    AND COLUMN_NAME = 'JSON_SENT'";
+
+                using var checkCommand = new SqlCommand(checkColumnSql, connection);
+                var columnExists = (int)await checkCommand.ExecuteScalarAsync() > 0;
+
+                if (!columnExists)
+                {
+                    _logger.LogInformation("🔧 Ajout de la colonne JSON_SENT...");
+
+                    const string addColumnSql = @"
+                        ALTER TABLE JSON_IN 
+                        ADD JSON_SENT BIT DEFAULT 0 NOT NULL";
+
+                    using var addCommand = new SqlCommand(addColumnSql, connection);
+                    await addCommand.ExecuteNonQueryAsync();
+
+                    // Créer un index pour optimiser les performances
+                    const string createIndexSql = @"
+                        CREATE NONCLUSTERED INDEX IX_JSON_IN_JSON_SENT 
+                        ON JSON_IN (JSON_SENT, JSON_FROM, JSON_STAT)";
+
+                    using var indexCommand = new SqlCommand(createIndexSql, connection);
+                    await indexCommand.ExecuteNonQueryAsync();
+
+                    _logger.LogInformation("✅ Colonne JSON_SENT ajoutée avec index");
+                }
+                else
+                {
+                    _logger.LogInformation("✅ Colonne JSON_SENT déjà présente");
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors de la création de la colonne JSON_SENT");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// Vérifie si une table existe
         /// </summary>
         private async Task<bool> TableExistsAsync(SqlConnection connection, string tableName)
@@ -78,7 +132,6 @@ namespace DynamicsApiToDatabase.Services
 
         /// <summary>
         /// Insère ou met à jour un enregistrement dans JSON_IN
-        /// Utilise JSON_BKEY pour identifier et JSON_HASH pour détecter les changements
         /// </summary>
         public async Task<bool> InsertOrUpdateJsonDataAsync(string businessKey, string jsonData, string endpoint, string status = "ACTIVE")
         {
@@ -240,11 +293,9 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Récupère les IDs des articles depuis une date donnée
+        /// Récupère UNIQUEMENT les articles NON confirmés (optimisation performance)
         /// </summary>
-        /// <param name="fromDate">Date à partir de laquelle récupérer les articles</param>
-        /// <returns>Liste des ItemIds</returns>
-        public async Task<List<string>> GetArticleIdsFromDateAsync(DateTime fromDate)
+        public async Task<List<string>> GetUnconfirmedArticleIdsOptimizedAsync()
         {
             var itemIds = new List<string>();
 
@@ -258,51 +309,7 @@ namespace DynamicsApiToDatabase.Services
                     FROM JSON_IN 
                     WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
                     AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
-                    AND JSON_CRDA >= @FromDate
-                    AND JSON_VALUE(JSON_DATA, '$.ItemId') IS NOT NULL
-                    ORDER BY JSON_VALUE(JSON_DATA, '$.ItemId')";
-
-                using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@FromDate", fromDate);
-
-                using var reader = await command.ExecuteReaderAsync();
-                while (await reader.ReadAsync())
-                {
-                    var itemId = reader.GetString("ItemId");
-                    if (!string.IsNullOrEmpty(itemId))
-                    {
-                        itemIds.Add(itemId);
-                    }
-                }
-
-                _logger.LogInformation($"📊 {itemIds.Count} articles trouvés depuis le {fromDate:dd/MM/yyyy}");
-                return itemIds;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Erreur lors de la récupération des articles depuis le {fromDate:dd/MM/yyyy}");
-                return itemIds;
-            }
-        }
-
-        /// <summary>
-        /// Récupère tous les articles actifs
-        /// </summary>
-        /// <returns>Liste des ItemIds</returns>
-        public async Task<List<string>> GetAllActiveArticleIdsAsync()
-        {
-            var itemIds = new List<string>();
-
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                const string sql = @"
-                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId
-                    FROM JSON_IN 
-                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND ISNULL(JSON_SENT, 0) = 0
                     AND JSON_VALUE(JSON_DATA, '$.ItemId') IS NOT NULL
                     ORDER BY JSON_VALUE(JSON_DATA, '$.ItemId')";
 
@@ -318,114 +325,7 @@ namespace DynamicsApiToDatabase.Services
                     }
                 }
 
-                _logger.LogInformation($"📊 {itemIds.Count} articles actifs trouvés");
-                return itemIds;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Erreur lors de la récupération des articles actifs");
-                return itemIds;
-            }
-        }
-
-        /// <summary>
-        /// Vérifie si un article existe dans la base de données
-        /// </summary>
-        /// <param name="itemId">ID de l'article</param>
-        /// <returns>True si l'article existe</returns>
-        public async Task<bool> ArticleExistsAsync(string itemId)
-        {
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                const string sql = @"
-                    SELECT COUNT(*)
-                    FROM JSON_IN 
-                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
-                    AND JSON_VALUE(JSON_DATA, '$.ItemId') = @ItemId";
-
-                using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@ItemId", itemId);
-
-                var count = (int)await command.ExecuteScalarAsync();
-                return count > 0;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Erreur lors de la vérification de l'existence de l'article {itemId}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Marque un enregistrement comme traité (pour éviter les re-confirmations)
-        /// </summary>
-        /// <param name="businessKey">Clé métier de l'enregistrement</param>
-        /// <param name="endpoint">Endpoint source</param>
-        /// <returns>True si la mise à jour a réussi</returns>
-        public async Task<bool> MarkAsProcessedAsync(string businessKey, string endpoint)
-        {
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                const string sql = @"
-                    UPDATE JSON_IN 
-                    SET JSON_STAT = 'PROCESSED'
-                    WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
-
-                using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@BusinessKey", businessKey);
-                command.Parameters.AddWithValue("@Endpoint", endpoint);
-
-                var rowsAffected = await command.ExecuteNonQueryAsync();
-                return rowsAffected > 0;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Erreur lors du marquage comme traité pour {businessKey}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Récupère les articles qui n'ont pas encore été confirmés
-        /// </summary>
-        /// <returns>Liste des ItemIds non confirmés</returns>
-        public async Task<List<string>> GetUnconfirmedArticleIdsAsync()
-        {
-            var itemIds = new List<string>();
-
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                const string sql = @"
-                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId
-                    FROM JSON_IN 
-                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
-                    AND JSON_VALUE(JSON_DATA, '$.ItemId') IS NOT NULL
-                    ORDER BY JSON_VALUE(JSON_DATA, '$.ItemId')";
-
-                using var command = new SqlCommand(sql, connection);
-                using var reader = await command.ExecuteReaderAsync();
-
-                while (await reader.ReadAsync())
-                {
-                    var itemId = reader.GetString("ItemId");
-                    if (!string.IsNullOrEmpty(itemId))
-                    {
-                        itemIds.Add(itemId);
-                    }
-                }
-
-                _logger.LogInformation($"📊 {itemIds.Count} articles non confirmés trouvés");
+                _logger.LogInformation($"📊 {itemIds.Count} articles NON confirmés trouvés (optimisé)");
                 return itemIds;
             }
             catch (Exception ex)
@@ -436,42 +336,53 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Marque un article comme confirmé (évite les re-confirmations)
+        /// Marque plusieurs articles comme confirmés en une seule requête (ULTRA OPTIMISÉ)
         /// </summary>
-        /// <param name="itemId">ID de l'article</param>
-        /// <returns>True si la mise à jour a réussi</returns>
-        public async Task<bool> MarkArticleAsConfirmedAsync(string itemId)
+        public async Task<int> MarkMultipleArticlesAsConfirmedAsync(List<string> itemIds)
         {
+            if (itemIds.Count == 0) return 0;
+
             try
             {
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
-                const string sql = @"
+                // Construire la requête avec des paramètres pour éviter l'injection SQL
+                var parameterNames = itemIds.Select((id, index) => $"@itemId{index}").ToArray();
+                var parameterPlaceholders = string.Join(",", parameterNames);
+
+                var sql = $@"
                     UPDATE JSON_IN 
-                    SET JSON_STAT = 'CONFIRMED'
+                    SET JSON_SENT = 1
                     WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-                    AND JSON_VALUE(JSON_DATA, '$.ItemId') = @ItemId
-                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'";
+                    AND JSON_VALUE(JSON_DATA, '$.ItemId') IN ({parameterPlaceholders})
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND ISNULL(JSON_SENT, 0) = 0";
 
                 using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@ItemId", itemId);
+
+                // Ajouter chaque ItemId comme paramètre
+                for (int i = 0; i < itemIds.Count; i++)
+                {
+                    command.Parameters.AddWithValue($"@itemId{i}", itemIds[i]);
+                }
 
                 var rowsAffected = await command.ExecuteNonQueryAsync();
-                return rowsAffected > 0;
+
+                _logger.LogInformation($"✅ {rowsAffected}/{itemIds.Count} articles marqués comme confirmés");
+                return rowsAffected;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"Erreur lors du marquage comme confirmé pour l'article {itemId}");
-                return false;
+                _logger.LogError(ex, "Erreur lors du marquage multiple des confirmations");
+                return 0;
             }
         }
 
         /// <summary>
-        /// Récupère des statistiques détaillées sur les articles
+        /// Statistiques des confirmations pour monitoring
         /// </summary>
-        /// <returns>Statistiques des articles</returns>
-        public async Task<ArticleStatistics> GetArticleStatisticsAsync()
+        public async Task<ConfirmationStatistics> GetConfirmationStatisticsAsync()
         {
             try
             {
@@ -481,12 +392,9 @@ namespace DynamicsApiToDatabase.Services
                 const string sql = @"
                     SELECT 
                         COUNT(*) as TotalArticles,
-                        COUNT(CASE WHEN ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE' THEN 1 END) as ActiveArticles,
-                        COUNT(CASE WHEN JSON_STAT = 'CONFIRMED' THEN 1 END) as ConfirmedArticles,
-                        COUNT(CASE WHEN JSON_STAT = 'PROCESSED' THEN 1 END) as ProcessedArticles,
-                        COUNT(CASE WHEN JSON_STAT = 'DELETED' THEN 1 END) as DeletedArticles,
-                        COUNT(CASE WHEN JSON_CRDA >= DATEADD(day, -1, GETDATE()) THEN 1 END) as AddedLast24h,
-                        COUNT(CASE WHEN JSON_CRDA >= DATEADD(day, -7, GETDATE()) THEN 1 END) as AddedLast7Days
+                        COUNT(CASE WHEN ISNULL(JSON_SENT, 0) = 1 THEN 1 END) as ConfirmedArticles,
+                        COUNT(CASE WHEN ISNULL(JSON_SENT, 0) = 0 AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE' THEN 1 END) as PendingConfirmations,
+                        COUNT(CASE WHEN ISNULL(JSON_SENT, 0) = 1 AND JSON_CRDA >= DATEADD(day, -1, GETDATE()) THEN 1 END) as ConfirmedLast24h
                     FROM JSON_IN
                     WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'";
 
@@ -495,24 +403,21 @@ namespace DynamicsApiToDatabase.Services
 
                 if (await reader.ReadAsync())
                 {
-                    return new ArticleStatistics
+                    return new ConfirmationStatistics
                     {
                         TotalArticles = reader.GetInt32("TotalArticles"),
-                        ActiveArticles = reader.GetInt32("ActiveArticles"),
                         ConfirmedArticles = reader.GetInt32("ConfirmedArticles"),
-                        ProcessedArticles = reader.GetInt32("ProcessedArticles"),
-                        DeletedArticles = reader.GetInt32("DeletedArticles"),
-                        AddedLast24h = reader.GetInt32("AddedLast24h"),
-                        AddedLast7Days = reader.GetInt32("AddedLast7Days")
+                        PendingConfirmations = reader.GetInt32("PendingConfirmations"),
+                        ConfirmedLast24h = reader.GetInt32("ConfirmedLast24h")
                     };
                 }
 
-                return new ArticleStatistics();
+                return new ConfirmationStatistics();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erreur lors de la récupération des statistiques des articles");
-                return new ArticleStatistics();
+                _logger.LogError(ex, "Erreur lors de la récupération des statistiques de confirmation");
+                return new ConfirmationStatistics();
             }
         }
 
@@ -565,42 +470,6 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogError(ex, "Erreur lors de la récupération des statistiques");
                 return new JsonInStatistics();
-            }
-        }
-
-        /// <summary>
-        /// Nettoie les anciens enregistrements supprimés
-        /// </summary>
-        /// <param name="olderThanDays">Supprimer les enregistrements supprimés plus anciens que X jours</param>
-        /// <returns>Nombre d'enregistrements supprimés</returns>
-        public async Task<int> CleanupOldDeletedRecordsAsync(int olderThanDays = 30)
-        {
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                const string sql = @"
-                    DELETE FROM JSON_IN 
-                    WHERE JSON_STAT = 'DELETED' 
-                    AND JSON_CRDA < DATEADD(day, -@OlderThanDays, GETDATE())";
-
-                using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@OlderThanDays", olderThanDays);
-
-                var rowsAffected = await command.ExecuteNonQueryAsync();
-
-                if (rowsAffected > 0)
-                {
-                    _logger.LogInformation($"🧹 {rowsAffected} anciens enregistrements supprimés (> {olderThanDays} jours)");
-                }
-
-                return rowsAffected;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Erreur lors du nettoyage des anciens enregistrements");
-                return 0;
             }
         }
     }

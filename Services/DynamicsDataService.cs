@@ -1,5 +1,5 @@
 // Fichier: Services/DynamicsDataService.cs
-// Service de synchronisation avec confirmation de réception
+// Service de synchronisation avec confirmation de réception optimisée
 
 using System;
 using System.Collections.Generic;
@@ -43,7 +43,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Synchronise un endpoint spécifique vers la table JSON_IN avec confirmation de réception
+        /// Synchronise un endpoint spécifique vers la table JSON_IN avec confirmation optimisée
         /// </summary>
         public async Task<SyncResult> SyncEndpointAsync(string endpointName, string endpointPath, string primaryKeyField = "ItemId")
         {
@@ -54,7 +54,6 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogInformation($"🔄 Début synchronisation {endpointName}...");
 
-                // Obtenir le token d'authentification
                 var token = await _authService.GetAccessTokenAsync();
                 if (string.IsNullOrEmpty(token))
                 {
@@ -64,7 +63,6 @@ namespace DynamicsApiToDatabase.Services
                 _httpClient.DefaultRequestHeaders.Clear();
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
 
-                // Récupérer les données de l'API
                 var apiData = await FetchAllDataFromEndpointAsync(endpointPath);
                 _logger.LogInformation($"📊 {apiData.Count} enregistrements récupérés de l'API {endpointName}");
 
@@ -74,19 +72,16 @@ namespace DynamicsApiToDatabase.Services
                     return result;
                 }
 
-                // Traiter chaque enregistrement
                 var currentKeys = new List<string>();
-                var confirmedItems = new List<string>(); // Pour stocker les articles confirmés
+                var confirmedItems = new List<string>();
 
                 foreach (var item in apiData)
                 {
                     var uniqueKey = GenerateUniqueKey(item, primaryKeyField, endpointName);
                     currentKeys.Add(uniqueKey);
 
-                    // Traiter l'enregistrement
                     var processResult = await ProcessSingleRecordAsync(uniqueKey, item, endpointPath, result);
 
-                    // Si c'est un article et qu'il a été traité avec succès, ajouter à la liste de confirmation
                     if (processResult.Success && endpointName.ToUpper() == "ARTICLES")
                     {
                         var itemId = ExtractItemId(item);
@@ -97,12 +92,30 @@ namespace DynamicsApiToDatabase.Services
                     }
                 }
 
-                // Confirmer la réception des articles (seulement pour les articles)
+                // ⚡ OPTIMISATION: Confirmer SEULEMENT les articles NON confirmés
                 if (confirmedItems.Count > 0)
                 {
-                    _logger.LogInformation($"📤 Confirmation de réception pour {confirmedItems.Count} articles...");
-                    var confirmationCount = await _statusConfirmationService.ConfirmMultipleItemsReceivedAsync(token, confirmedItems);
-                    _logger.LogInformation($"✅ {confirmationCount}/{confirmedItems.Count} articles confirmés");
+                    _logger.LogInformation($"📤 Vérification des confirmations pour {confirmedItems.Count} articles...");
+
+                    var nonConfirmedItems = await FilterAlreadyConfirmedItemsAsync(confirmedItems);
+
+                    if (nonConfirmedItems.Count > 0)
+                    {
+                        var confirmationCount = await _statusConfirmationService.ConfirmMultipleItemsReceivedAsync(token, nonConfirmedItems);
+
+                        if (confirmationCount > 0)
+                        {
+                            // Marquer les articles confirmés avec succès
+                            var confirmedSuccessfully = nonConfirmedItems.Take(confirmationCount).ToList();
+                            await _databaseService.MarkMultipleArticlesAsConfirmedAsync(confirmedSuccessfully);
+                        }
+
+                        _logger.LogInformation($"✅ {confirmationCount}/{nonConfirmedItems.Count} nouveaux articles confirmés");
+                    }
+                    else
+                    {
+                        _logger.LogInformation("ℹ️ Tous les articles étaient déjà confirmés - aucune confirmation envoyée");
+                    }
                 }
 
                 // Marquer les enregistrements supprimés
@@ -130,7 +143,32 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Traite un seul enregistrement avec retour du résultat
+        /// Filtre les articles déjà confirmés pour éviter les confirmations en double (OPTIMISATION)
+        /// </summary>
+        private async Task<List<string>> FilterAlreadyConfirmedItemsAsync(List<string> itemIds)
+        {
+            try
+            {
+                var unconfirmedItems = await _databaseService.GetUnconfirmedArticleIdsOptimizedAsync();
+                var itemsToConfirm = itemIds.Intersect(unconfirmedItems).ToList();
+
+                var alreadyConfirmed = itemIds.Count - itemsToConfirm.Count;
+                if (alreadyConfirmed > 0)
+                {
+                    _logger.LogInformation($"⚡ Optimisation: {alreadyConfirmed} articles déjà confirmés ignorés");
+                }
+
+                return itemsToConfirm;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors du filtrage des articles confirmés");
+                return itemIds;
+            }
+        }
+
+        /// <summary>
+        /// Traite un seul enregistrement
         /// </summary>
         private async Task<ProcessResult> ProcessSingleRecordAsync(string uniqueKey, JsonElement item, string endpointPath, SyncResult result)
         {
@@ -194,7 +232,7 @@ namespace DynamicsApiToDatabase.Services
         {
             var allData = new List<JsonElement>();
             var url = $"{_baseUrl}{endpointPath}";
-            var pageSize = 1000; // Taille de page optimale pour Dynamics
+            var pageSize = 1000;
             var skip = 0;
 
             while (true)
@@ -216,14 +254,13 @@ namespace DynamicsApiToDatabase.Services
                     var content = await response.Content.ReadAsStringAsync();
                     var jsonDoc = JsonDocument.Parse(content);
 
-                    // Dynamics retourne les données dans une propriété "value"
                     if (jsonDoc.RootElement.TryGetProperty("value", out var valueProperty))
                     {
                         var pageData = valueProperty.EnumerateArray().ToList();
 
                         if (pageData.Count == 0)
                         {
-                            break; // Fin des données
+                            break;
                         }
 
                         allData.AddRange(pageData);
@@ -231,7 +268,6 @@ namespace DynamicsApiToDatabase.Services
 
                         _logger.LogDebug($"📄 Page récupérée: {pageData.Count} enregistrements (total: {allData.Count})");
 
-                        // Si la page retournée est plus petite que la taille demandée, on a tout récupéré
                         if (pageData.Count < pageSize)
                         {
                             break;
@@ -265,7 +301,6 @@ namespace DynamicsApiToDatabase.Services
         {
             try
             {
-                // Cas spéciaux pour différents types d'endpoints
                 switch (endpointName.ToUpper())
                 {
                     case "ARTICLES":
@@ -304,14 +339,12 @@ namespace DynamicsApiToDatabase.Services
                         break;
                 }
 
-                // Cas général : utiliser le champ de clé primaire fourni
                 if (item.TryGetProperty(primaryKeyField, out var primaryValue))
                 {
                     var prefix = endpointName.Substring(0, Math.Min(3, endpointName.Length)).ToUpper();
                     return $"{prefix}_{primaryValue.GetString()}";
                 }
 
-                // Dernière option : générer une clé basée sur le hash du contenu
                 var contentHash = ComputeContentHash(item.GetRawText());
                 return $"HASH_{contentHash}";
             }
@@ -324,13 +357,13 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Calcule un hash du contenu pour générer une clé unique
+        /// Calcule un hash du contenu
         /// </summary>
         private string ComputeContentHash(string content)
         {
             using var sha256 = System.Security.Cryptography.SHA256.Create();
             var hashBytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(content));
-            return Convert.ToHexString(hashBytes)[..16]; // Prendre les 16 premiers caractères
+            return Convert.ToHexString(hashBytes)[..16];
         }
 
         /// <summary>
@@ -348,7 +381,6 @@ namespace DynamicsApiToDatabase.Services
                 var result = await SyncEndpointAsync(endpoint.Name, endpoint.Path, endpoint.PrimaryKeyField);
                 results.Add(result);
 
-                // Pause entre les endpoints pour éviter la surcharge
                 await Task.Delay(1000);
             }
 

@@ -121,6 +121,27 @@ namespace DynamicsApiToDatabase.Models
         }
     }
 
+
+    /// <summary>
+    /// Statistiques des confirmations optimisées
+    /// </summary>
+    public class ConfirmationStatistics
+    {
+        public int TotalArticles { get; set; }
+        public int ConfirmedArticles { get; set; }
+        public int PendingConfirmations { get; set; }
+        public int ConfirmedLast24h { get; set; }
+
+        public double ConfirmationRate => TotalArticles > 0 ?
+            (double)ConfirmedArticles / TotalArticles * 100 : 0;
+
+        public string GetSummary()
+        {
+            return $"Total: {TotalArticles:N0}, Confirmés: {ConfirmedArticles:N0} ({ConfirmationRate:F1}%), " +
+                   $"En attente: {PendingConfirmations:N0}, Confirmés 24h: {ConfirmedLast24h:N0}";
+        }
+    }
+
     /// <summary>
     /// Statut d'un article dans le processus de synchronisation
     /// </summary>

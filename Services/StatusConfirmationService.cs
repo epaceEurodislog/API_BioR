@@ -21,6 +21,7 @@ namespace DynamicsApiToDatabase.Services
         private readonly IConfiguration _configuration;
         private readonly ILogger<StatusConfirmationService> _logger;
         private readonly string _baseUrl;
+        private readonly string _dataAreaId;
 
         public StatusConfirmationService(
             HttpClient httpClient,
@@ -32,33 +33,29 @@ namespace DynamicsApiToDatabase.Services
             _logger = logger;
             _baseUrl = configuration["ResourceUrl"]?.TrimEnd('/')
                 ?? throw new ArgumentNullException("ResourceUrl manquante");
+            _dataAreaId = configuration["DataAreaId"] ?? "br";
         }
 
         /// <summary>
         /// Confirme la réception d'un article avec le statut ProcessedBy3PL
         /// </summary>
-        /// <param name="token">Token d'authentification</param>
-        /// <param name="itemId">ID de l'article</param>
-        /// <returns>True si la confirmation a réussi</returns>
         public async Task<bool> ConfirmItemReceivedAsync(string token, string itemId)
         {
             try
             {
                 _logger.LogInformation($"📤 Confirmation de réception pour l'article {itemId}");
 
-                // Construction de l'URL de l'endpoint
                 var endpoint = $"{_baseUrl}/data/BRINT34ReleasedProducts/Microsoft.Dynamics.DataEntities.changeStatus";
 
-                // Préparation des headers
                 _httpClient.DefaultRequestHeaders.Clear();
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
                 _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
 
-                // Création du payload JSON
                 var payload = new
                 {
                     _itemId = itemId,
-                    _status = "ProcessedBy3PL"
+                    _status = "ProcessedBy3PL",
+                    _dataAreaId = _dataAreaId
                 };
 
                 var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
@@ -71,7 +68,6 @@ namespace DynamicsApiToDatabase.Services
                 _logger.LogDebug($"🔍 Envoi vers: {endpoint}");
                 _logger.LogDebug($"📋 Payload: {jsonPayload}");
 
-                // Envoi de la requête POST
                 var response = await _httpClient.PostAsync(endpoint, content);
 
                 if (response.IsSuccessStatusCode)
@@ -96,9 +92,6 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Confirme la réception de plusieurs articles en lot
         /// </summary>
-        /// <param name="token">Token d'authentification</param>
-        /// <param name="itemIds">Liste des IDs d'articles</param>
-        /// <returns>Nombre de confirmations réussies</returns>
         public async Task<int> ConfirmMultipleItemsReceivedAsync(string token, List<string> itemIds)
         {
             int successCount = 0;
@@ -128,46 +121,6 @@ namespace DynamicsApiToDatabase.Services
 
             _logger.LogInformation($"✅ Confirmations terminées: {successCount}/{totalCount} articles confirmés");
             return successCount;
-        }
-
-        /// <summary>
-        /// Confirme la réception d'un article avec retry en cas d'échec
-        /// </summary>
-        /// <param name="token">Token d'authentification</param>
-        /// <param name="itemId">ID de l'article</param>
-        /// <param name="maxRetries">Nombre maximum de tentatives</param>
-        /// <returns>True si la confirmation a réussi</returns>
-        public async Task<bool> ConfirmItemReceivedWithRetryAsync(string token, string itemId, int maxRetries = 3)
-        {
-            for (int attempt = 1; attempt <= maxRetries; attempt++)
-            {
-                try
-                {
-                    bool success = await ConfirmItemReceivedAsync(token, itemId);
-                    if (success)
-                    {
-                        return true;
-                    }
-
-                    if (attempt < maxRetries)
-                    {
-                        var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt)); // Délai exponentiel
-                        _logger.LogWarning($"⚠️ Tentative {attempt} échouée pour {itemId}, retry dans {delay.TotalSeconds}s");
-                        await Task.Delay(delay);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"❌ Erreur tentative {attempt} pour {itemId}");
-                    if (attempt == maxRetries)
-                    {
-                        return false;
-                    }
-                }
-            }
-
-            _logger.LogError($"❌ Échec définitif de la confirmation pour {itemId} après {maxRetries} tentatives");
-            return false;
         }
     }
 }
