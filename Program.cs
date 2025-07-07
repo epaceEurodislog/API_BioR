@@ -219,22 +219,7 @@ namespace DynamicsApiToDatabase
             return data[..4] + "***" + data[^4..];
         }
 
-        private static string ExtractServerFromConnectionString(string? connectionString)
-        {
-            if (string.IsNullOrEmpty(connectionString))
-                return "Non configuré";
-
-            try
-            {
-                var parts = connectionString.Split(';');
-                var serverPart = parts.FirstOrDefault(p => p.StartsWith("Server=", StringComparison.OrdinalIgnoreCase));
-                return serverPart?.Split('=')[1] ?? "Inconnu";
-            }
-            catch
-            {
-                return "Format invalide";
-            }
-        }
+        // ✅ UNE SEULE VERSION de la méthode ExtractServerFromConnectionString
         private static string ExtractServerFromConnectionString(string? connectionString)
         {
             if (string.IsNullOrEmpty(connectionString))
@@ -269,6 +254,7 @@ namespace DynamicsApiToDatabase
             services.AddScoped<DynamicsDataService>();
             services.AddScoped<StatusConfirmationService>();
             services.AddScoped<ExternalProgramLauncher>();
+            services.AddScoped<JsonOutService>();
 
             // Configuration HTTP Client
             services.AddHttpClient<DynamicsDataService>(client =>

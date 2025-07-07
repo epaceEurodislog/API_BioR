@@ -1,6 +1,6 @@
 // Fichier: Services/SqlServerDatabaseService.cs
 // Service de gestion de la base de données SQL Server pour la table JSON_IN
-// VERSION COMPLÈTE avec optimisation des confirmations
+// VERSION COMPLÈTE CORRIGÉE avec optimisation des confirmations
 
 using System;
 using System.Data;
@@ -64,7 +64,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Vérifie et ajoute la colonne JSON_SENT si elle n'existe pas
+        /// ✅ CORRIGÉ: Vérifie et ajoute la colonne JSON_SENT avec validation stricte
         /// </summary>
         public async Task<bool> EnsureConfirmationColumnExistsAsync()
         {
@@ -73,7 +73,7 @@ namespace DynamicsApiToDatabase.Services
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
-                // Vérifier si la colonne existe déjà
+                // ✅ AMÉLIORATION: Vérification plus robuste
                 const string checkColumnSql = @"
                     SELECT COUNT(*)
                     FROM INFORMATION_SCHEMA.COLUMNS 
@@ -94,15 +94,32 @@ namespace DynamicsApiToDatabase.Services
                     using var addCommand = new SqlCommand(addColumnSql, connection);
                     await addCommand.ExecuteNonQueryAsync();
 
+                    _logger.LogInformation("✅ Colonne JSON_SENT ajoutée");
+
+                    // ✅ VÉRIFICATION POST-CRÉATION
+                    using var verifyCommand = new SqlCommand(checkColumnSql, connection);
+                    var verified = (int)await verifyCommand.ExecuteScalarAsync() > 0;
+
+                    if (!verified)
+                    {
+                        throw new Exception("Échec de la création de la colonne JSON_SENT");
+                    }
+
                     // Créer un index pour optimiser les performances
-                    const string createIndexSql = @"
-                        CREATE NONCLUSTERED INDEX IX_JSON_IN_JSON_SENT 
-                        ON JSON_IN (JSON_SENT, JSON_FROM, JSON_STAT)";
+                    try
+                    {
+                        const string createIndexSql = @"
+                            CREATE NONCLUSTERED INDEX IX_JSON_IN_JSON_SENT 
+                            ON JSON_IN (JSON_SENT, JSON_FROM, JSON_STAT)";
 
-                    using var indexCommand = new SqlCommand(createIndexSql, connection);
-                    await indexCommand.ExecuteNonQueryAsync();
-
-                    _logger.LogInformation("✅ Colonne JSON_SENT ajoutée avec index");
+                        using var indexCommand = new SqlCommand(createIndexSql, connection);
+                        await indexCommand.ExecuteNonQueryAsync();
+                        _logger.LogInformation("✅ Index IX_JSON_IN_JSON_SENT créé");
+                    }
+                    catch (Exception indexEx)
+                    {
+                        _logger.LogWarning(indexEx, "⚠️ Impossible de créer l'index (peut-être déjà existant)");
+                    }
                 }
                 else
                 {
@@ -113,8 +130,8 @@ namespace DynamicsApiToDatabase.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erreur lors de la création de la colonne JSON_SENT");
-                return false;
+                _logger.LogError(ex, "❌ ERREUR CRITIQUE: Impossible de créer/vérifier la colonne JSON_SENT");
+                throw; // ✅ ARRÊTER le programme si cette étape échoue
             }
         }
 
@@ -336,7 +353,52 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Marque plusieurs articles comme confirmés en une seule requête (ULTRA OPTIMISÉ)
+        /// Récupère les IDs des articles depuis une date donnée
+        /// </summary>
+        public async Task<List<string>> GetArticleIdsFromDateAsync(DateTime fromDate)
+        {
+            var itemIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND JSON_CRDA >= @FromDate
+                    AND JSON_VALUE(JSON_DATA, '$.ItemId') IS NOT NULL
+                    ORDER BY JSON_VALUE(JSON_DATA, '$.ItemId')";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@FromDate", fromDate);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var itemId = reader.GetString("ItemId");
+                    if (!string.IsNullOrEmpty(itemId))
+                    {
+                        itemIds.Add(itemId);
+                    }
+                }
+
+                _logger.LogInformation($"📊 {itemIds.Count} articles trouvés depuis le {fromDate:dd/MM/yyyy}");
+                return itemIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération des articles depuis le {fromDate:dd/MM/yyyy}");
+                return itemIds;
+            }
+        }
+
+        /// <summary>
+        /// ✅ CORRIGÉ: Marque plusieurs articles comme confirmés avec méthode robuste
         /// </summary>
         public async Task<int> MarkMultipleArticlesAsConfirmedAsync(List<string> itemIds)
         {
@@ -346,6 +408,89 @@ namespace DynamicsApiToDatabase.Services
             {
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
+
+                _logger.LogInformation($"🔄 Début marquage de {itemIds.Count} articles comme confirmés...");
+
+                // ✅ CORRECTION: Traiter par batch de 50 pour éviter les problèmes de paramètres
+                var updates = 0;
+                var batchSize = 50;
+
+                for (int i = 0; i < itemIds.Count; i += batchSize)
+                {
+                    var batch = itemIds.Skip(i).Take(batchSize).ToList();
+                    var batchUpdates = await MarkBatchAsConfirmedAsync(connection, batch);
+                    updates += batchUpdates;
+
+                    _logger.LogDebug($"📊 Batch {(i / batchSize) + 1}: {batchUpdates}/{batch.Count} articles marqués");
+                }
+
+                _logger.LogInformation($"✅ {updates}/{itemIds.Count} articles marqués comme confirmés");
+                return updates;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors du marquage multiple des confirmations");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE: Marque un batch d'articles comme confirmés
+        /// </summary>
+        private async Task<int> MarkBatchAsConfirmedAsync(SqlConnection connection, List<string> itemIds)
+        {
+            if (itemIds.Count == 0) return 0;
+
+            try
+            {
+                // ✅ MÉTHODE 1: Requête simplifiée avec LIKE (plus compatible)
+                var updates = 0;
+
+                foreach (var itemId in itemIds)
+                {
+                    const string sql = @"
+                        UPDATE JSON_IN 
+                        SET JSON_SENT = 1
+                        WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                        AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                        AND ISNULL(JSON_SENT, 0) = 0
+                        AND JSON_DATA LIKE '%""ItemId"":""' + @ItemId + '""%'";
+
+                    using var command = new SqlCommand(sql, connection);
+                    command.Parameters.AddWithValue("@ItemId", itemId);
+
+                    var rowsAffected = await command.ExecuteNonQueryAsync();
+                    updates += rowsAffected;
+
+                    if (rowsAffected > 0)
+                    {
+                        _logger.LogDebug($"✅ Article {itemId}: marqué comme confirmé");
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"⚠️ Article {itemId}: aucune ligne mise à jour");
+                    }
+                }
+
+                return updates;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur lors du marquage du batch de {itemIds.Count} articles");
+
+                // ✅ MÉTHODE 2: Fallback avec JSON_VALUE si LIKE échoue
+                return await MarkBatchWithJsonValueAsync(connection, itemIds);
+            }
+        }
+
+        /// <summary>
+        /// ✅ MÉTHODE FALLBACK: Utilise JSON_VALUE comme avant
+        /// </summary>
+        private async Task<int> MarkBatchWithJsonValueAsync(SqlConnection connection, List<string> itemIds)
+        {
+            try
+            {
+                _logger.LogWarning("⚠️ Utilisation de la méthode fallback JSON_VALUE");
 
                 // Construire la requête avec des paramètres pour éviter l'injection SQL
                 var parameterNames = itemIds.Select((id, index) => $"@itemId{index}").ToArray();
@@ -368,14 +513,137 @@ namespace DynamicsApiToDatabase.Services
                 }
 
                 var rowsAffected = await command.ExecuteNonQueryAsync();
-
-                _logger.LogInformation($"✅ {rowsAffected}/{itemIds.Count} articles marqués comme confirmés");
+                _logger.LogInformation($"✅ Fallback JSON_VALUE: {rowsAffected} articles marqués");
                 return rowsAffected;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erreur lors du marquage multiple des confirmations");
+                _logger.LogError(ex, "❌ Erreur dans la méthode fallback JSON_VALUE");
                 return 0;
+            }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE: Test de marquage pour diagnostic
+        /// </summary>
+        public async Task<bool> TestMarkingSingleArticleAsync(string itemId)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                _logger.LogInformation($"🧪 Test de marquage pour l'article: {itemId}");
+
+                // Test 1: Vérifier que l'article existe
+                const string checkSql = @"
+                    SELECT COUNT(*), ISNULL(JSON_SENT, 0) as CurrentStatus
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    AND JSON_DATA LIKE '%""ItemId"":""' + @ItemId + '""%'
+                    GROUP BY JSON_SENT";
+
+                using var checkCommand = new SqlCommand(checkSql, connection);
+                checkCommand.Parameters.AddWithValue("@ItemId", itemId);
+
+                using var reader = await checkCommand.ExecuteReaderAsync();
+                var found = false;
+                while (await reader.ReadAsync())
+                {
+                    var count = reader.GetInt32(0);
+                    var currentStatus = reader.GetInt32(1);
+                    _logger.LogInformation($"📊 Article {itemId}: {count} occurrence(s), JSON_SENT = {currentStatus}");
+                    found = true;
+                }
+                reader.Close();
+
+                if (!found)
+                {
+                    _logger.LogWarning($"⚠️ Article {itemId} non trouvé en base");
+                    return false;
+                }
+
+                // Test 2: Essayer le marquage
+                const string updateSql = @"
+                    UPDATE JSON_IN 
+                    SET JSON_SENT = 1
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    AND ISNULL(JSON_SENT, 0) = 0
+                    AND JSON_DATA LIKE '%""ItemId"":""' + @ItemId + '""%'";
+
+                using var updateCommand = new SqlCommand(updateSql, connection);
+                updateCommand.Parameters.AddWithValue("@ItemId", itemId);
+
+                var rowsAffected = await updateCommand.ExecuteNonQueryAsync();
+
+                if (rowsAffected > 0)
+                {
+                    _logger.LogInformation($"✅ Test réussi: {rowsAffected} ligne(s) marquée(s) pour {itemId}");
+                    return true;
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Test échoué: Aucune ligne mise à jour pour {itemId}");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur lors du test de marquage pour {itemId}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE: Analyse détaillée des données JSON pour diagnostic
+        /// </summary>
+        public async Task<List<string>> AnalyzeJsonDataStructureAsync(int sampleSize = 5)
+        {
+            var analysisResults = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT TOP (@SampleSize)
+                        JSON_KEYU,
+                        JSON_BKEY,
+                        JSON_DATA,
+                        ISNULL(JSON_SENT, 0) as JSON_SENT,
+                        JSON_VALUE(JSON_DATA, '$.ItemId') as ExtractedItemId
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+                    ORDER BY JSON_CRDA DESC";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@SampleSize", sampleSize);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var keyU = reader.GetInt32("JSON_KEYU");
+                    var bKey = reader.GetString("JSON_BKEY");
+                    var jsonData = reader.GetString("JSON_DATA");
+                    var jsonSent = reader.GetInt32("JSON_SENT");
+                    var extractedItemId = reader.IsDBNull("ExtractedItemId") ? "NULL" : reader.GetString("ExtractedItemId");
+
+                    var analysis = $"ID:{keyU} | BKEY:{bKey} | SENT:{jsonSent} | ItemId:{extractedItemId}";
+                    analysisResults.Add(analysis);
+
+                    _logger.LogInformation($"📊 {analysis}");
+                    _logger.LogDebug($"📄 JSON: {jsonData.Substring(0, Math.Min(100, jsonData.Length))}...");
+                }
+
+                _logger.LogInformation($"✅ Analyse terminée: {analysisResults.Count} échantillons analysés");
+                return analysisResults;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors de l'analyse des données JSON");
+                return analysisResults;
             }
         }
 
@@ -470,6 +738,244 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogError(ex, "Erreur lors de la récupération des statistiques");
                 return new JsonInStatistics();
+            }
+        }
+
+
+        // ✅ NOUVELLE MÉTHODE 1: Récupérer les détails d'un enregistrement existant
+        public async Task<(int Id, string Hash)?> GetExistingRecordDetailsAsync(string businessKey, string endpoint)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
+            FROM JSON_IN 
+            WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@BusinessKey", businessKey);
+                command.Parameters.AddWithValue("@Endpoint", endpoint);
+
+                using var reader = await command.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    return (reader.GetInt32("JSON_KEYU"), reader.GetString("JSON_HASH"));
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération des détails pour {businessKey}");
+                return null;
+            }
+        }
+
+        // ✅ NOUVELLE MÉTHODE 2: Récupérer l'ID JSON_IN par clé métier
+        public async Task<int?> GetJsonInIdByBusinessKeyAsync(string businessKey, string endpoint)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT JSON_KEYU
+            FROM JSON_IN 
+            WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@BusinessKey", businessKey);
+                command.Parameters.AddWithValue("@Endpoint", endpoint);
+
+                var result = await command.ExecuteScalarAsync();
+                return result != null ? (int)result : (int?)null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération de l'ID pour {businessKey}");
+                return null;
+            }
+        }
+
+        // ✅ NOUVELLE MÉTHODE 3: Récupérer l'ID JSON_IN par ItemId
+        public async Task<int?> GetJsonInIdByItemIdAsync(string itemId)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT TOP 1 JSON_KEYU
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+            AND JSON_VALUE(JSON_DATA, '$.ItemId') = @ItemId
+            ORDER BY JSON_CRDA DESC";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@ItemId", itemId);
+
+                var result = await command.ExecuteScalarAsync();
+                return result != null ? (int)result : (int?)null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération de l'ID pour l'article {itemId}");
+                return null;
+            }
+        }
+
+        // ✅ NOUVELLE MÉTHODE 4: Récupérer les articles avec leurs IDs pour traçabilité
+        public async Task<Dictionary<string, int>> GetArticleIdMappingAsync(List<string> itemIds)
+        {
+            var mapping = new Dictionary<string, int>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                if (itemIds.Count == 0) return mapping;
+
+                // Construire la requête avec des paramètres
+                var parameterNames = itemIds.Select((id, index) => $"@itemId{index}").ToArray();
+                var parameterPlaceholders = string.Join(",", parameterNames);
+
+                var sql = $@"
+            SELECT 
+                JSON_KEYU,
+                JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+            AND JSON_VALUE(JSON_DATA, '$.ItemId') IN ({parameterPlaceholders})";
+
+                using var command = new SqlCommand(sql, connection);
+
+                for (int i = 0; i < itemIds.Count; i++)
+                {
+                    command.Parameters.AddWithValue($"@itemId{i}", itemIds[i]);
+                }
+
+                using var reader = await command.ExecuteReaderAsync();
+                while (await reader.ReadAsync())
+                {
+                    var jsonKeyU = reader.GetInt32("JSON_KEYU");
+                    var itemId = reader.GetString("ItemId");
+
+                    if (!string.IsNullOrEmpty(itemId))
+                    {
+                        mapping[itemId] = jsonKeyU;
+                    }
+                }
+
+                return mapping;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de la récupération du mapping des articles");
+                return mapping;
+            }
+        }
+
+        // ✅ NOUVELLE MÉTHODE 5: Statistiques de traçabilité détaillées
+        public async Task<TraceabilityStatistics> GetTraceabilityStatisticsAsync()
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT 
+                COUNT(DISTINCT i.JSON_KEYU) as TotalArticles,
+                COUNT(DISTINCT CASE WHEN i.JSON_SENT = 1 THEN i.JSON_KEYU END) as ArticlesMarkedLocally,
+                COUNT(DISTINCT o.JSON_IN_KEYU) as ArticlesWithConfirmationAttempts,
+                COUNT(DISTINCT CASE WHEN o.JSON_STATUS = 'SUCCESS' THEN o.JSON_IN_KEYU END) as ArticlesConfirmedSuccessfully,
+                COUNT(DISTINCT CASE WHEN o.JSON_STATUS = 'ERROR' THEN o.JSON_IN_KEYU END) as ArticlesWithErrors,
+                COUNT(DISTINCT CASE WHEN o.JSON_STATUS = 'PENDING' THEN o.JSON_IN_KEYU END) as ArticlesPending,
+                COUNT(o.JSON_KEYU) as TotalConfirmationAttempts,
+                COUNT(CASE WHEN o.JSON_STATUS = 'SUCCESS' THEN 1 END) as SuccessfulAttempts,
+                COUNT(CASE WHEN o.JSON_STATUS = 'ERROR' THEN 1 END) as FailedAttempts
+            FROM JSON_IN i
+            LEFT JOIN JSON_OUT o ON i.JSON_KEYU = o.JSON_IN_KEYU
+            WHERE i.JSON_FROM = 'data/BRINT34ReleasedProducts'";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                if (await reader.ReadAsync())
+                {
+                    return new TraceabilityStatistics
+                    {
+                        TotalArticles = reader.GetInt32("TotalArticles"),
+                        ArticlesMarkedLocally = reader.GetInt32("ArticlesMarkedLocally"),
+                        ArticlesWithConfirmationAttempts = reader.GetInt32("ArticlesWithConfirmationAttempts"),
+                        ArticlesConfirmedSuccessfully = reader.GetInt32("ArticlesConfirmedSuccessfully"),
+                        ArticlesWithErrors = reader.GetInt32("ArticlesWithErrors"),
+                        ArticlesPending = reader.GetInt32("ArticlesPending"),
+                        TotalConfirmationAttempts = reader.GetInt32("TotalConfirmationAttempts"),
+                        SuccessfulAttempts = reader.GetInt32("SuccessfulAttempts"),
+                        FailedAttempts = reader.GetInt32("FailedAttempts")
+                    };
+                }
+
+                return new TraceabilityStatistics();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de la récupération des statistiques de traçabilité");
+                return new TraceabilityStatistics();
+            }
+        }
+
+        // ✅ NOUVELLE CLASSE: Modèle pour les statistiques de traçabilité
+        public class TraceabilityStatistics
+        {
+            public int TotalArticles { get; set; }
+            public int ArticlesMarkedLocally { get; set; }
+            public int ArticlesWithConfirmationAttempts { get; set; }
+            public int ArticlesConfirmedSuccessfully { get; set; }
+            public int ArticlesWithErrors { get; set; }
+            public int ArticlesPending { get; set; }
+            public int TotalConfirmationAttempts { get; set; }
+            public int SuccessfulAttempts { get; set; }
+            public int FailedAttempts { get; set; }
+
+            public double LocalMarkingRate => TotalArticles > 0 ?
+                (double)ArticlesMarkedLocally / TotalArticles * 100 : 0;
+
+            public double ConfirmationAttemptRate => TotalArticles > 0 ?
+                (double)ArticlesWithConfirmationAttempts / TotalArticles * 100 : 0;
+
+            public double SuccessfulConfirmationRate => ArticlesWithConfirmationAttempts > 0 ?
+                (double)ArticlesConfirmedSuccessfully / ArticlesWithConfirmationAttempts * 100 : 0;
+
+            public double AttemptSuccessRate => TotalConfirmationAttempts > 0 ?
+                (double)SuccessfulAttempts / TotalConfirmationAttempts * 100 : 0;
+
+            public string GetSummary()
+            {
+                return $"Articles: {TotalArticles:N0} | Marqués: {ArticlesMarkedLocally:N0} ({LocalMarkingRate:F1}%) | " +
+                       $"Confirmés: {ArticlesConfirmedSuccessfully:N0} ({SuccessfulConfirmationRate:F1}%) | " +
+                       $"Erreurs: {ArticlesWithErrors:N0} | En attente: {ArticlesPending:N0}";
+            }
+
+            public string GetHealthReport()
+            {
+                var issues = new List<string>();
+
+                if (LocalMarkingRate < 90) issues.Add($"⚠️ Marquage local faible ({LocalMarkingRate:F1}%)");
+                if (ConfirmationAttemptRate < 90) issues.Add($"⚠️ Peu de tentatives de confirmation ({ConfirmationAttemptRate:F1}%)");
+                if (SuccessfulConfirmationRate < 80) issues.Add($"❌ Taux d'échec élevé ({100 - SuccessfulConfirmationRate:F1}% d'échecs)");
+                if (ArticlesPending > ArticlesConfirmedSuccessfully / 10) issues.Add($"⏳ Beaucoup d'articles en attente ({ArticlesPending})");
+
+                if (issues.Count == 0)
+                    return "✅ Système en bonne santé";
+
+                return "🚨 Problèmes détectés:\n" + string.Join("\n", issues);
             }
         }
     }
