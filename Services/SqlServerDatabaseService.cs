@@ -1,6 +1,6 @@
 // Fichier: Services/SqlServerDatabaseService.cs
 // Service de gestion de la base de données SQL Server pour la table JSON_IN
-// VERSION COMPLÈTE CORRIGÉE avec optimisation des confirmations
+// VERSION CORRIGÉE - Constructeurs unifiés
 
 using System;
 using System.Data;
@@ -21,6 +21,9 @@ namespace DynamicsApiToDatabase.Services
         private readonly string _connectionString;
         private readonly ILogger<SqlServerDatabaseService> _logger;
 
+        /// <summary>
+        /// ✅ CORRIGÉ: UN SEUL CONSTRUCTEUR avec le bon type de logger
+        /// </summary>
         public SqlServerDatabaseService(IConfiguration configuration, ILogger<SqlServerDatabaseService> logger)
         {
             _connectionString = configuration.GetConnectionString("DefaultConnection")
@@ -193,21 +196,18 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Recherche un enregistrement existant par clé métier + endpoint
         /// </summary>
-        // ✅ CORRIGÉ : Requête qui prend le plus récent OU compte les doublons
         private async Task<(int Id, string Hash)?> GetExistingRecordAsync(SqlConnection connection, string businessKey, string endpoint)
         {
-            // Option A : Prendre le plus récent
             const string sql = @"
-        SELECT TOP 1 JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
-        FROM JSON_IN 
-        WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint
-        ORDER BY JSON_CRDA DESC"; // ✅ Le plus récent en premier
+                SELECT TOP 1 JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
+                FROM JSON_IN 
+                WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint
+                ORDER BY JSON_CRDA DESC";
 
-            // Option B : Détecter les doublons
             const string sqlCheck = @"
-        SELECT COUNT(*) as DoublonCount
-        FROM JSON_IN 
-        WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
+                SELECT COUNT(*) as DoublonCount
+                FROM JSON_IN 
+                WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
 
             using var checkCommand = new SqlCommand(sqlCheck, connection);
             checkCommand.Parameters.AddWithValue("@BusinessKey", businessKey);
@@ -292,7 +292,6 @@ namespace DynamicsApiToDatabase.Services
                     return 0;
                 }
 
-                // Construire la requête avec des paramètres pour éviter l'injection SQL
                 var parameterNames = currentBusinessKeys.Select((key, index) => $"@key{index}").ToArray();
                 var parameterPlaceholders = string.Join(",", parameterNames);
 
@@ -306,7 +305,6 @@ namespace DynamicsApiToDatabase.Services
                 using var command = new SqlCommand(sql, connection);
                 command.Parameters.AddWithValue("@Endpoint", endpoint);
 
-                // Ajouter chaque clé comme paramètre
                 for (int i = 0; i < currentBusinessKeys.Count; i++)
                 {
                     command.Parameters.AddWithValue($"@key{i}", currentBusinessKeys[i]);
@@ -417,7 +415,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// ✅ CORRIGÉ: Marque plusieurs articles comme confirmés avec méthode robuste
+        /// Marque plusieurs articles comme confirmés avec méthode robuste
         /// </summary>
         public async Task<int> MarkMultipleArticlesAsConfirmedAsync(List<string> itemIds)
         {
@@ -430,7 +428,6 @@ namespace DynamicsApiToDatabase.Services
 
                 _logger.LogInformation($"🔄 Début marquage de {itemIds.Count} articles comme confirmés...");
 
-                // ✅ CORRECTION: Traiter par batch de 50 pour éviter les problèmes de paramètres
                 var updates = 0;
                 var batchSize = 50;
 
@@ -454,7 +451,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// ✅ NOUVELLE MÉTHODE: Marque un batch d'articles comme confirmés
+        /// Marque un batch d'articles comme confirmés
         /// </summary>
         private async Task<int> MarkBatchAsConfirmedAsync(SqlConnection connection, List<string> itemIds)
         {
@@ -462,7 +459,6 @@ namespace DynamicsApiToDatabase.Services
 
             try
             {
-                // ✅ MÉTHODE 1: Requête simplifiée avec LIKE (plus compatible)
                 var updates = 0;
 
                 foreach (var itemId in itemIds)
@@ -496,14 +492,12 @@ namespace DynamicsApiToDatabase.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"❌ Erreur lors du marquage du batch de {itemIds.Count} articles");
-
-                // ✅ MÉTHODE 2: Fallback avec JSON_VALUE si LIKE échoue
                 return await MarkBatchWithJsonValueAsync(connection, itemIds);
             }
         }
 
         /// <summary>
-        /// ✅ MÉTHODE FALLBACK: Utilise JSON_VALUE comme avant
+        /// Méthode fallback avec JSON_VALUE
         /// </summary>
         private async Task<int> MarkBatchWithJsonValueAsync(SqlConnection connection, List<string> itemIds)
         {
@@ -511,7 +505,6 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogWarning("⚠️ Utilisation de la méthode fallback JSON_VALUE");
 
-                // Construire la requête avec des paramètres pour éviter l'injection SQL
                 var parameterNames = itemIds.Select((id, index) => $"@itemId{index}").ToArray();
                 var parameterPlaceholders = string.Join(",", parameterNames);
 
@@ -525,7 +518,6 @@ namespace DynamicsApiToDatabase.Services
 
                 using var command = new SqlCommand(sql, connection);
 
-                // Ajouter chaque ItemId comme paramètre
                 for (int i = 0; i < itemIds.Count; i++)
                 {
                     command.Parameters.AddWithValue($"@itemId{i}", itemIds[i]);
@@ -539,130 +531,6 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogError(ex, "❌ Erreur dans la méthode fallback JSON_VALUE");
                 return 0;
-            }
-        }
-
-        /// <summary>
-        /// ✅ NOUVELLE MÉTHODE: Test de marquage pour diagnostic
-        /// </summary>
-        public async Task<bool> TestMarkingSingleArticleAsync(string itemId)
-        {
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                _logger.LogInformation($"🧪 Test de marquage pour l'article: {itemId}");
-
-                // Test 1: Vérifier que l'article existe
-                const string checkSql = @"
-                    SELECT COUNT(*), ISNULL(JSON_SENT, 0) as CurrentStatus
-                    FROM JSON_IN 
-                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-                    AND JSON_DATA LIKE '%""ItemId"":""' + @ItemId + '""%'
-                    GROUP BY JSON_SENT";
-
-                using var checkCommand = new SqlCommand(checkSql, connection);
-                checkCommand.Parameters.AddWithValue("@ItemId", itemId);
-
-                using var reader = await checkCommand.ExecuteReaderAsync();
-                var found = false;
-                while (await reader.ReadAsync())
-                {
-                    var count = reader.GetInt32(0);
-                    var currentStatus = reader.GetInt32(1);
-                    _logger.LogInformation($"📊 Article {itemId}: {count} occurrence(s), JSON_SENT = {currentStatus}");
-                    found = true;
-                }
-                reader.Close();
-
-                if (!found)
-                {
-                    _logger.LogWarning($"⚠️ Article {itemId} non trouvé en base");
-                    return false;
-                }
-
-                // Test 2: Essayer le marquage
-                const string updateSql = @"
-                    UPDATE JSON_IN 
-                    SET JSON_SENT = 1
-                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-                    AND ISNULL(JSON_SENT, 0) = 0
-                    AND JSON_DATA LIKE '%""ItemId"":""' + @ItemId + '""%'";
-
-                using var updateCommand = new SqlCommand(updateSql, connection);
-                updateCommand.Parameters.AddWithValue("@ItemId", itemId);
-
-                var rowsAffected = await updateCommand.ExecuteNonQueryAsync();
-
-                if (rowsAffected > 0)
-                {
-                    _logger.LogInformation($"✅ Test réussi: {rowsAffected} ligne(s) marquée(s) pour {itemId}");
-                    return true;
-                }
-                else
-                {
-                    _logger.LogWarning($"⚠️ Test échoué: Aucune ligne mise à jour pour {itemId}");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"❌ Erreur lors du test de marquage pour {itemId}");
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// ✅ NOUVELLE MÉTHODE: Analyse détaillée des données JSON pour diagnostic
-        /// </summary>
-        public async Task<List<string>> AnalyzeJsonDataStructureAsync(int sampleSize = 5)
-        {
-            var analysisResults = new List<string>();
-
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                const string sql = @"
-                    SELECT TOP (@SampleSize)
-                        JSON_KEYU,
-                        JSON_BKEY,
-                        JSON_DATA,
-                        ISNULL(JSON_SENT, 0) as JSON_SENT,
-                        JSON_VALUE(JSON_DATA, '$.ItemId') as ExtractedItemId
-                    FROM JSON_IN 
-                    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-                    ORDER BY JSON_CRDA DESC";
-
-                using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@SampleSize", sampleSize);
-
-                using var reader = await command.ExecuteReaderAsync();
-
-                while (await reader.ReadAsync())
-                {
-                    var keyU = reader.GetInt32("JSON_KEYU");
-                    var bKey = reader.GetString("JSON_BKEY");
-                    var jsonData = reader.GetString("JSON_DATA");
-                    var jsonSent = reader.GetInt32("JSON_SENT");
-                    var extractedItemId = reader.IsDBNull("ExtractedItemId") ? "NULL" : reader.GetString("ExtractedItemId");
-
-                    var analysis = $"ID:{keyU} | BKEY:{bKey} | SENT:{jsonSent} | ItemId:{extractedItemId}";
-                    analysisResults.Add(analysis);
-
-                    _logger.LogInformation($"📊 {analysis}");
-                    _logger.LogDebug($"📄 JSON: {jsonData.Substring(0, Math.Min(100, jsonData.Length))}...");
-                }
-
-                _logger.LogInformation($"✅ Analyse terminée: {analysisResults.Count} échantillons analysés");
-                return analysisResults;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ Erreur lors de l'analyse des données JSON");
-                return analysisResults;
             }
         }
 
@@ -709,17 +577,6 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Calcule un hash MD5 du contenu JSON
-        /// </summary>
-        private static string ComputeHash(string input)
-        {
-            using var md5 = MD5.Create();
-            var inputBytes = Encoding.UTF8.GetBytes(input);
-            var hashBytes = md5.ComputeHash(inputBytes);
-            return Convert.ToHexString(hashBytes);
-        }
-
-        /// <summary>
         /// Obtient des statistiques sur la table JSON_IN
         /// </summary>
         public async Task<JsonInStatistics> GetStatisticsAsync()
@@ -760,241 +617,337 @@ namespace DynamicsApiToDatabase.Services
             }
         }
 
-
-        // ✅ NOUVELLE MÉTHODE 1: Récupérer les détails d'un enregistrement existant
-        public async Task<(int Id, string Hash)?> GetExistingRecordDetailsAsync(string businessKey, string endpoint)
+        /// <summary>
+        /// Récupère les lignes d'une Purchase Order depuis JSON_IN
+        /// </summary>
+        public async Task<List<OrderLineInfo>> GetPurchaseOrderLinesAsync(string purchId)
         {
+            var orderLines = new List<OrderLineInfo>();
+
             try
             {
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
                 const string sql = @"
-            SELECT JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
-            FROM JSON_IN 
-            WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
+                    SELECT 
+                        JSON_DATA,
+                        JSON_VALUE(JSON_DATA, '$.PurchId') as PurchId,
+                        JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId,
+                        JSON_VALUE(JSON_DATA, '$.LineNumber') as LineNumber,
+                        JSON_VALUE(JSON_DATA, '$.PurchQty') as Quantity
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT32PurchOrderTables'
+                    AND JSON_VALUE(JSON_DATA, '$.PurchId') = @PurchId
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY CAST(JSON_VALUE(JSON_DATA, '$.LineNumber') AS INT)";
 
                 using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@BusinessKey", businessKey);
-                command.Parameters.AddWithValue("@Endpoint", endpoint);
+                command.Parameters.AddWithValue("@PurchId", purchId);
 
                 using var reader = await command.ExecuteReaderAsync();
-                if (await reader.ReadAsync())
-                {
-                    return (reader.GetInt32("JSON_KEYU"), reader.GetString("JSON_HASH"));
-                }
-                return null;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Erreur lors de la récupération des détails pour {businessKey}");
-                return null;
-            }
-        }
 
-        // ✅ NOUVELLE MÉTHODE 2: Récupérer l'ID JSON_IN par clé métier
-        public async Task<int?> GetJsonInIdByBusinessKeyAsync(string businessKey, string endpoint)
-        {
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                const string sql = @"
-            SELECT JSON_KEYU
-            FROM JSON_IN 
-            WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
-
-                using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@BusinessKey", businessKey);
-                command.Parameters.AddWithValue("@Endpoint", endpoint);
-
-                var result = await command.ExecuteScalarAsync();
-                return result != null ? (int)result : (int?)null;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Erreur lors de la récupération de l'ID pour {businessKey}");
-                return null;
-            }
-        }
-
-        // ✅ NOUVELLE MÉTHODE 3: Récupérer l'ID JSON_IN par ItemId
-        public async Task<int?> GetJsonInIdByItemIdAsync(string itemId)
-        {
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                const string sql = @"
-            SELECT TOP 1 JSON_KEYU
-            FROM JSON_IN 
-            WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-            AND JSON_VALUE(JSON_DATA, '$.ItemId') = @ItemId
-            ORDER BY JSON_CRDA DESC";
-
-                using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@ItemId", itemId);
-
-                var result = await command.ExecuteScalarAsync();
-                return result != null ? (int)result : (int?)null;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Erreur lors de la récupération de l'ID pour l'article {itemId}");
-                return null;
-            }
-        }
-
-        // ✅ NOUVELLE MÉTHODE 4: Récupérer les articles avec leurs IDs pour traçabilité
-        public async Task<Dictionary<string, int>> GetArticleIdMappingAsync(List<string> itemIds)
-        {
-            var mapping = new Dictionary<string, int>();
-
-            try
-            {
-                using var connection = new SqlConnection(_connectionString);
-                await connection.OpenAsync();
-
-                if (itemIds.Count == 0) return mapping;
-
-                // Construire la requête avec des paramètres
-                var parameterNames = itemIds.Select((id, index) => $"@itemId{index}").ToArray();
-                var parameterPlaceholders = string.Join(",", parameterNames);
-
-                var sql = $@"
-            SELECT 
-                JSON_KEYU,
-                JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId
-            FROM JSON_IN 
-            WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
-            AND JSON_VALUE(JSON_DATA, '$.ItemId') IN ({parameterPlaceholders})";
-
-                using var command = new SqlCommand(sql, connection);
-
-                for (int i = 0; i < itemIds.Count; i++)
-                {
-                    command.Parameters.AddWithValue($"@itemId{i}", itemIds[i]);
-                }
-
-                using var reader = await command.ExecuteReaderAsync();
                 while (await reader.ReadAsync())
                 {
-                    var jsonKeyU = reader.GetInt32("JSON_KEYU");
-                    var itemId = reader.GetString("ItemId");
+                    var itemId = reader.IsDBNull("ItemId") ? "" : reader.GetString("ItemId");
+                    var lineNumberStr = reader.IsDBNull("LineNumber") ? "0" : reader.GetString("LineNumber");
+                    var quantityStr = reader.IsDBNull("Quantity") ? "0" : reader.GetString("Quantity");
 
                     if (!string.IsNullOrEmpty(itemId))
                     {
-                        mapping[itemId] = jsonKeyU;
+                        orderLines.Add(new OrderLineInfo
+                        {
+                            OrderId = purchId,
+                            ItemId = itemId,
+                            LineNumber = int.TryParse(lineNumberStr, out var lineNum) ? lineNum : 0,
+                            Quantity = decimal.TryParse(quantityStr, out var qty) ? qty : 0,
+                            OrderType = "Purchase"
+                        });
                     }
                 }
 
-                return mapping;
+                _logger.LogInformation($"📊 {orderLines.Count} lignes récupérées pour Purchase Order {purchId}");
+                return orderLines;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erreur lors de la récupération du mapping des articles");
-                return mapping;
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Purchase Order {purchId}");
+                return orderLines;
             }
         }
 
-        // ✅ NOUVELLE MÉTHODE 5: Statistiques de traçabilité détaillées
-        public async Task<TraceabilityStatistics> GetTraceabilityStatisticsAsync()
+        /// <summary>
+        /// Récupère les lignes d'une Return Order depuis JSON_IN
+        /// </summary>
+        public async Task<List<OrderLineInfo>> GetReturnOrderLinesAsync(string returnId)
         {
+            var orderLines = new List<OrderLineInfo>();
+
             try
             {
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
                 const string sql = @"
-            SELECT 
-                COUNT(DISTINCT i.JSON_KEYU) as TotalArticles,
-                COUNT(DISTINCT CASE WHEN i.JSON_SENT = 1 THEN i.JSON_KEYU END) as ArticlesMarkedLocally,
-                COUNT(DISTINCT o.JSON_IN_KEYU) as ArticlesWithConfirmationAttempts,
-                COUNT(DISTINCT CASE WHEN o.JSON_STATUS = 'SUCCESS' THEN o.JSON_IN_KEYU END) as ArticlesConfirmedSuccessfully,
-                COUNT(DISTINCT CASE WHEN o.JSON_STATUS = 'ERROR' THEN o.JSON_IN_KEYU END) as ArticlesWithErrors,
-                COUNT(DISTINCT CASE WHEN o.JSON_STATUS = 'PENDING' THEN o.JSON_IN_KEYU END) as ArticlesPending,
-                COUNT(o.JSON_KEYU) as TotalConfirmationAttempts,
-                COUNT(CASE WHEN o.JSON_STATUS = 'SUCCESS' THEN 1 END) as SuccessfulAttempts,
-                COUNT(CASE WHEN o.JSON_STATUS = 'ERROR' THEN 1 END) as FailedAttempts
-            FROM JSON_IN i
-            LEFT JOIN JSON_OUT o ON i.JSON_KEYU = o.JSON_IN_KEYU
-            WHERE i.JSON_FROM = 'data/BRINT34ReleasedProducts'";
+                    SELECT 
+                        JSON_DATA,
+                        JSON_VALUE(JSON_DATA, '$.ReturnItemNum') as ReturnItemNum,
+                        JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId,
+                        JSON_VALUE(JSON_DATA, '$.LineNum') as LineNumber,
+                        JSON_VALUE(JSON_DATA, '$.OrderedReturnQuantity') as Quantity
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT32ReturnOrderTables'
+                    AND JSON_VALUE(JSON_DATA, '$.ReturnItemNum') = @ReturnId
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY CAST(JSON_VALUE(JSON_DATA, '$.LineNum') AS DECIMAL)";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@ReturnId", returnId);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var itemId = reader.IsDBNull("ItemId") ? "" : reader.GetString("ItemId");
+                    var lineNumberStr = reader.IsDBNull("LineNumber") ? "0" : reader.GetString("LineNumber");
+                    var quantityStr = reader.IsDBNull("Quantity") ? "0" : reader.GetString("Quantity");
+
+                    if (!string.IsNullOrEmpty(itemId))
+                    {
+                        orderLines.Add(new OrderLineInfo
+                        {
+                            OrderId = returnId,
+                            ItemId = itemId,
+                            LineNumber = (int)(decimal.TryParse(lineNumberStr, out var lineNum) ? lineNum : 0),
+                            Quantity = decimal.TryParse(quantityStr, out var qty) ? qty : 0,
+                            OrderType = "Return"
+                        });
+                    }
+                }
+
+                _logger.LogInformation($"📊 {orderLines.Count} lignes récupérées pour Return Order {returnId}");
+                return orderLines;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Return Order {returnId}");
+                return orderLines;
+            }
+        }
+
+        /// <summary>
+        /// Récupère les lignes d'une Transfer Order depuis JSON_IN
+        /// </summary>
+        public async Task<List<OrderLineInfo>> GetTransferOrderLinesAsync(string transferId)
+        {
+            var orderLines = new List<OrderLineInfo>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT 
+                        JSON_DATA,
+                        JSON_VALUE(JSON_DATA, '$.TransferId') as TransferId,
+                        JSON_VALUE(JSON_DATA, '$.ItemId') as ItemId,
+                        JSON_VALUE(JSON_DATA, '$.LineNumber') as LineNumber,
+                        JSON_VALUE(JSON_DATA, '$.QtyTransfer') as Quantity
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT32TransferOrderTables'
+                    AND JSON_VALUE(JSON_DATA, '$.TransferId') = @TransferId
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    ORDER BY CAST(JSON_VALUE(JSON_DATA, '$.LineNumber') AS INT)";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@TransferId", transferId);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var itemId = reader.IsDBNull("ItemId") ? "" : reader.GetString("ItemId");
+                    var lineNumberStr = reader.IsDBNull("LineNumber") ? "0" : reader.GetString("LineNumber");
+                    var quantityStr = reader.IsDBNull("Quantity") ? "0" : reader.GetString("Quantity");
+
+                    if (!string.IsNullOrEmpty(itemId))
+                    {
+                        orderLines.Add(new OrderLineInfo
+                        {
+                            OrderId = transferId,
+                            ItemId = itemId,
+                            LineNumber = int.TryParse(lineNumberStr, out var lineNum) ? lineNum : 0,
+                            Quantity = decimal.TryParse(quantityStr, out var qty) ? qty : 0,
+                            OrderType = "Transfer"
+                        });
+                    }
+                }
+
+                _logger.LogInformation($"📊 {orderLines.Count} lignes récupérées pour Transfer Order {transferId}");
+                return orderLines;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Transfer Order {transferId}");
+                return orderLines;
+            }
+        }
+
+        /// <summary>
+        /// Récupère tous les IDs des Purchase Orders actives
+        /// </summary>
+        public async Task<List<string>> GetActivePurchaseOrderIdsAsync()
+        {
+            var orderIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.PurchId') as PurchId
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT32PurchOrderTables'
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND JSON_VALUE(JSON_DATA, '$.PurchId') IS NOT NULL
+                    ORDER BY JSON_VALUE(JSON_DATA, '$.PurchId')";
 
                 using var command = new SqlCommand(sql, connection);
                 using var reader = await command.ExecuteReaderAsync();
 
-                if (await reader.ReadAsync())
+                while (await reader.ReadAsync())
                 {
-                    return new TraceabilityStatistics
+                    var purchId = reader.GetString("PurchId");
+                    if (!string.IsNullOrEmpty(purchId))
                     {
-                        TotalArticles = reader.GetInt32("TotalArticles"),
-                        ArticlesMarkedLocally = reader.GetInt32("ArticlesMarkedLocally"),
-                        ArticlesWithConfirmationAttempts = reader.GetInt32("ArticlesWithConfirmationAttempts"),
-                        ArticlesConfirmedSuccessfully = reader.GetInt32("ArticlesConfirmedSuccessfully"),
-                        ArticlesWithErrors = reader.GetInt32("ArticlesWithErrors"),
-                        ArticlesPending = reader.GetInt32("ArticlesPending"),
-                        TotalConfirmationAttempts = reader.GetInt32("TotalConfirmationAttempts"),
-                        SuccessfulAttempts = reader.GetInt32("SuccessfulAttempts"),
-                        FailedAttempts = reader.GetInt32("FailedAttempts")
-                    };
+                        orderIds.Add(purchId);
+                    }
                 }
 
-                return new TraceabilityStatistics();
+                _logger.LogInformation($"📊 {orderIds.Count} Purchase Orders actives trouvées");
+                return orderIds;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Erreur lors de la récupération des statistiques de traçabilité");
-                return new TraceabilityStatistics();
+                _logger.LogError(ex, "❌ Erreur récupération Purchase Orders actives");
+                return orderIds;
             }
         }
 
-        // ✅ NOUVELLE CLASSE: Modèle pour les statistiques de traçabilité
-        public class TraceabilityStatistics
+        /// <summary>
+        /// Récupère tous les IDs des Return Orders actives
+        /// </summary>
+        public async Task<List<string>> GetActiveReturnOrderIdsAsync()
         {
-            public int TotalArticles { get; set; }
-            public int ArticlesMarkedLocally { get; set; }
-            public int ArticlesWithConfirmationAttempts { get; set; }
-            public int ArticlesConfirmedSuccessfully { get; set; }
-            public int ArticlesWithErrors { get; set; }
-            public int ArticlesPending { get; set; }
-            public int TotalConfirmationAttempts { get; set; }
-            public int SuccessfulAttempts { get; set; }
-            public int FailedAttempts { get; set; }
+            var orderIds = new List<string>();
 
-            public double LocalMarkingRate => TotalArticles > 0 ?
-                (double)ArticlesMarkedLocally / TotalArticles * 100 : 0;
-
-            public double ConfirmationAttemptRate => TotalArticles > 0 ?
-                (double)ArticlesWithConfirmationAttempts / TotalArticles * 100 : 0;
-
-            public double SuccessfulConfirmationRate => ArticlesWithConfirmationAttempts > 0 ?
-                (double)ArticlesConfirmedSuccessfully / ArticlesWithConfirmationAttempts * 100 : 0;
-
-            public double AttemptSuccessRate => TotalConfirmationAttempts > 0 ?
-                (double)SuccessfulAttempts / TotalConfirmationAttempts * 100 : 0;
-
-            public string GetSummary()
+            try
             {
-                return $"Articles: {TotalArticles:N0} | Marqués: {ArticlesMarkedLocally:N0} ({LocalMarkingRate:F1}%) | " +
-                       $"Confirmés: {ArticlesConfirmedSuccessfully:N0} ({SuccessfulConfirmationRate:F1}%) | " +
-                       $"Erreurs: {ArticlesWithErrors:N0} | En attente: {ArticlesPending:N0}";
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.ReturnItemNum') as ReturnItemNum
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT32ReturnOrderTables'
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND JSON_VALUE(JSON_DATA, '$.ReturnItemNum') IS NOT NULL
+                    ORDER BY JSON_VALUE(JSON_DATA, '$.ReturnItemNum')";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var returnId = reader.GetString("ReturnItemNum");
+                    if (!string.IsNullOrEmpty(returnId))
+                    {
+                        orderIds.Add(returnId);
+                    }
+                }
+
+                _logger.LogInformation($"📊 {orderIds.Count} Return Orders actives trouvées");
+                return orderIds;
             }
-
-            public string GetHealthReport()
+            catch (Exception ex)
             {
-                var issues = new List<string>();
+                _logger.LogError(ex, "❌ Erreur récupération Return Orders actives");
+                return orderIds;
+            }
+        }
 
-                if (LocalMarkingRate < 90) issues.Add($"⚠️ Marquage local faible ({LocalMarkingRate:F1}%)");
-                if (ConfirmationAttemptRate < 90) issues.Add($"⚠️ Peu de tentatives de confirmation ({ConfirmationAttemptRate:F1}%)");
-                if (SuccessfulConfirmationRate < 80) issues.Add($"❌ Taux d'échec élevé ({100 - SuccessfulConfirmationRate:F1}% d'échecs)");
-                if (ArticlesPending > ArticlesConfirmedSuccessfully / 10) issues.Add($"⏳ Beaucoup d'articles en attente ({ArticlesPending})");
+        /// <summary>
+        /// Récupère tous les IDs des Transfer Orders actives
+        /// </summary>
+        public async Task<List<string>> GetActiveTransferOrderIdsAsync()
+        {
+            var orderIds = new List<string>();
 
-                if (issues.Count == 0)
-                    return "✅ Système en bonne santé";
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
 
-                return "🚨 Problèmes détectés:\n" + string.Join("\n", issues);
+                const string sql = @"
+                    SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.TransferId') as TransferId
+                    FROM JSON_IN 
+                    WHERE JSON_FROM = 'data/BRINT32TransferOrderTables'
+                    AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+                    AND JSON_VALUE(JSON_DATA, '$.TransferId') IS NOT NULL
+                    ORDER BY JSON_VALUE(JSON_DATA, '$.TransferId')";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var transferId = reader.GetString("TransferId");
+                    if (!string.IsNullOrEmpty(transferId))
+                    {
+                        orderIds.Add(transferId);
+                    }
+                }
+
+                _logger.LogInformation($"📊 {orderIds.Count} Transfer Orders actives trouvées");
+                return orderIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur récupération Transfer Orders actives");
+                return orderIds;
+            }
+        }
+
+        /// <summary>
+        /// Calcule un hash MD5 du contenu JSON
+        /// </summary>
+        private static string ComputeHash(string input)
+        {
+            using var md5 = MD5.Create();
+            var inputBytes = Encoding.UTF8.GetBytes(input);
+            var hashBytes = md5.ComputeHash(inputBytes);
+            return Convert.ToHexString(hashBytes);
+        }
+
+        /// <summary>
+        /// Classe pour représenter une ligne de commande avec informations détaillées
+        /// </summary>
+        public class OrderLineInfo
+        {
+            public string OrderId { get; set; } = "";
+            public string ItemId { get; set; } = "";
+            public int LineNumber { get; set; }
+            public decimal Quantity { get; set; }
+            public string OrderType { get; set; } = "";
+            public string Status { get; set; } = "";
+            public DateTime CreatedDate { get; set; }
+            public DateTime LastUpdated { get; set; }
+
+            public string GetDisplayName()
+            {
+                return $"{OrderType} {OrderId} - Line {LineNumber} - Item {ItemId} (Qty: {Quantity})";
             }
         }
     }

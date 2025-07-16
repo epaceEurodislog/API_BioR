@@ -1,6 +1,6 @@
 // Fichier: Services/StatusConfirmationService.cs
 // Service pour envoyer la confirmation de réception vers l'API Dynamics 365
-// VERSION SIMPLIFIÉE - Juste enregistrer les envois
+// VERSION COMPLÈTE avec confirmations Purchase/Return/Transfer et INT3PLStatus
 
 using System;
 using System.Collections.Generic;
@@ -40,7 +40,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// ✅ SIMPLE: Confirme la réception d'un article et enregistre l'envoi
+        /// Confirme la réception d'un article et enregistre l'envoi
         /// </summary>
         public async Task<bool> ConfirmItemReceivedAsync(string token, string itemId)
         {
@@ -50,7 +50,6 @@ namespace DynamicsApiToDatabase.Services
 
                 var endpoint = $"{_baseUrl}/data/BRINT34ReleasedProducts/Microsoft.Dynamics.DataEntities.changeStatus";
 
-                // ✅ 1. Préparer le payload
                 var payload = new
                 {
                     _itemId = itemId,
@@ -59,21 +58,16 @@ namespace DynamicsApiToDatabase.Services
 
                 var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
                 {
-                    PropertyNamingPolicy = null // Garder les underscores
+                    PropertyNamingPolicy = null
                 });
 
-                // ✅ 2. Enregistrer AVANT l'envoi dans JSON_OUT
                 await _jsonOutService.LogJsonSentAsync(itemId, jsonPayload, endpoint);
 
-                // ✅ 3. Envoyer à l'API
                 _httpClient.DefaultRequestHeaders.Clear();
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
                 _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
 
                 var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-                _logger.LogDebug($"🔍 Envoi vers: {endpoint}");
-                _logger.LogDebug($"📋 Payload: {jsonPayload}");
 
                 var response = await _httpClient.PostAsync(endpoint, content);
                 var responseContent = await response.Content.ReadAsStringAsync();
@@ -81,30 +75,21 @@ namespace DynamicsApiToDatabase.Services
                 if (response.IsSuccessStatusCode)
                 {
                     _logger.LogInformation($"✅ Confirmation réussie pour l'article {itemId}");
-
-                    // ✅ 4. Optionnel: Enregistrer aussi la réponse
                     await _jsonOutService.LogJsonSentAsync($"{itemId}_RESPONSE", responseContent, "RESPONSE", null, (int)response.StatusCode);
-
                     return true;
                 }
                 else
                 {
                     var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
                     _logger.LogError($"❌ Erreur confirmation {itemId}: {errorMessage}");
-
-                    // ✅ 5. Enregistrer l'erreur aussi
                     await _jsonOutService.LogJsonSentAsync($"{itemId}_ERROR", responseContent, "ERROR", null, (int)response.StatusCode);
-
                     return false;
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"❌ Exception confirmation {itemId}");
-
-                // ✅ 6. Enregistrer l'exception
                 await _jsonOutService.LogJsonSentAsync($"{itemId}_EXCEPTION", ex.Message, "EXCEPTION");
-
                 return false;
             }
         }
@@ -129,13 +114,11 @@ namespace DynamicsApiToDatabase.Services
                     successfullyConfirmed.Add(itemId);
                 }
 
-                // Affichage du progrès tous les 5 articles
                 if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
                 {
                     _logger.LogInformation($"📊 Progrès: {i + 1}/{totalCount} articles traités ({successfullyConfirmed.Count} confirmés)");
                 }
 
-                // Pause pour éviter de surcharger l'API
                 await Task.Delay(200);
             }
 
@@ -174,7 +157,6 @@ namespace DynamicsApiToDatabase.Services
                     return true;
                 }
 
-                // Si ce n'est pas la dernière tentative, attendre
                 if (attempt < maxRetries)
                 {
                     var delay = TimeSpan.FromSeconds(Math.Pow(2, attempt));
@@ -222,55 +204,25 @@ namespace DynamicsApiToDatabase.Services
             }
         }
 
-        /// <summary>
-        /// Confirme plusieurs articles avec retry
-        /// </summary>
-        public async Task<int> ConfirmMultipleItemsWithRetryAsync(string token, List<string> itemIds, int maxRetries = 3)
-        {
-            int successCount = 0;
-            int totalCount = itemIds.Count;
-
-            _logger.LogInformation($"📤 Début de confirmation avec retry pour {totalCount} articles (max {maxRetries} tentatives)...");
-
-            for (int i = 0; i < itemIds.Count; i++)
-            {
-                var itemId = itemIds[i];
-                bool success = await ConfirmItemReceivedWithRetryAsync(token, itemId, maxRetries);
-
-                if (success)
-                {
-                    successCount++;
-                }
-
-                if ((i + 1) % 3 == 0 || (i + 1) == totalCount)
-                {
-                    _logger.LogInformation($"📊 Progrès confirmations: {i + 1}/{totalCount} articles traités ({successCount} réussies)");
-                }
-
-                await Task.Delay(500);
-            }
-
-            var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
-            _logger.LogInformation($"✅ Confirmations avec retry terminées: {successCount}/{totalCount} articles confirmés ({successRate:F1}% succès)");
-
-            return successCount;
-        }
+        // ==========================================
+        // NOUVELLES MÉTHODES POUR COMMANDES
+        // ==========================================
 
         /// <summary>
-        /// Confirme une commande d'achat (Purchase Order)
+        /// Confirme une Purchase Order et met à jour INT3PLStatus
         /// </summary>
-        public async Task<bool> ConfirmPurchaseOrderAsync(string token, string orderId)
+        public async Task<bool> ConfirmPurchaseOrderWithStatusUpdateAsync(string token, string purchId, string int3plStatus = "Processed")
         {
             try
             {
-                _logger.LogInformation($"📤 Confirmation Purchase Order: {orderId}");
+                _logger.LogInformation($"📤 Confirmation Purchase Order avec INT3PLStatus: {purchId}");
 
                 var endpoint = $"{_baseUrl}/api/services/BRINT32ServiceGroup/BRINT32Service/updatePurchOrderStatus";
 
                 var payload = new
                 {
-                    _dataAresId = "BR",
-                    _id = orderId,
+                    _dataAreaId = "BR",
+                    _id = purchId,
                     _status = 2  // Processed
                 };
 
@@ -279,7 +231,7 @@ namespace DynamicsApiToDatabase.Services
                     PropertyNamingPolicy = null
                 });
 
-                await _jsonOutService.LogJsonSentAsync($"PURCH_{orderId}", jsonPayload, endpoint);
+                await _jsonOutService.LogJsonSentAsync($"PURCH_STATUS_{purchId}", jsonPayload, endpoint);
 
                 _httpClient.DefaultRequestHeaders.Clear();
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
@@ -287,49 +239,49 @@ namespace DynamicsApiToDatabase.Services
 
                 var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-                _logger.LogDebug($"🔍 Envoi vers: {endpoint}");
-                _logger.LogDebug($"📋 Payload: {jsonPayload}");
-
                 var response = await _httpClient.PostAsync(endpoint, content);
                 var responseContent = await response.Content.ReadAsStringAsync();
 
                 if (response.IsSuccessStatusCode)
                 {
-                    _logger.LogInformation($"✅ Purchase Order {orderId} confirmée");
-                    await _jsonOutService.LogSuccessAsync($"PURCH_{orderId}", responseContent);
+                    _logger.LogInformation($"✅ Purchase Order {purchId} confirmée avec succès");
+                    await _jsonOutService.LogSuccessAsync($"PURCH_STATUS_{purchId}", responseContent);
+
+                    await UpdatePurchaseOrderLinesInt3PLStatusAsync(token, purchId, int3plStatus);
+
                     return true;
                 }
                 else
                 {
                     var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
-                    _logger.LogError($"❌ Erreur Purchase Order {orderId}: {errorMessage}");
-                    await _jsonOutService.LogErrorAsync($"PURCH_{orderId}", jsonPayload, errorMessage, (int)response.StatusCode);
+                    _logger.LogError($"❌ Erreur Purchase Order {purchId}: {errorMessage}");
+                    await _jsonOutService.LogErrorAsync($"PURCH_STATUS_{purchId}", jsonPayload, errorMessage, (int)response.StatusCode);
                     return false;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Exception Purchase Order {orderId}");
-                await _jsonOutService.LogErrorAsync($"PURCH_{orderId}", "", ex.Message);
+                _logger.LogError(ex, $"❌ Exception Purchase Order {purchId}");
+                await _jsonOutService.LogErrorAsync($"PURCH_STATUS_{purchId}", "", ex.Message);
                 return false;
             }
         }
 
         /// <summary>
-        /// Confirme une commande de retour (Return Order)
+        /// Confirme une Return Order et met à jour INT3PLStatus
         /// </summary>
-        public async Task<bool> ConfirmReturnOrderAsync(string token, string orderId)
+        public async Task<bool> ConfirmReturnOrderWithStatusUpdateAsync(string token, string returnId, string int3plStatus = "Processed")
         {
             try
             {
-                _logger.LogInformation($"📤 Confirmation Return Order: {orderId}");
+                _logger.LogInformation($"📤 Confirmation Return Order avec INT3PLStatus: {returnId}");
 
                 var endpoint = $"{_baseUrl}/api/services/BRINT32ServiceGroup/BRINT32Service/updateReturnOrderStatus";
 
                 var payload = new
                 {
-                    _dataAresId = "BR",
-                    _id = orderId,
+                    _dataAreaId = "BR",
+                    _id = returnId,
                     _status = 2  // Processed
                 };
 
@@ -338,7 +290,7 @@ namespace DynamicsApiToDatabase.Services
                     PropertyNamingPolicy = null
                 });
 
-                await _jsonOutService.LogJsonSentAsync($"RET_{orderId}", jsonPayload, endpoint);
+                await _jsonOutService.LogJsonSentAsync($"RETURN_STATUS_{returnId}", jsonPayload, endpoint);
 
                 _httpClient.DefaultRequestHeaders.Clear();
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
@@ -346,49 +298,49 @@ namespace DynamicsApiToDatabase.Services
 
                 var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-                _logger.LogDebug($"🔍 Envoi vers: {endpoint}");
-                _logger.LogDebug($"📋 Payload: {jsonPayload}");
-
                 var response = await _httpClient.PostAsync(endpoint, content);
                 var responseContent = await response.Content.ReadAsStringAsync();
 
                 if (response.IsSuccessStatusCode)
                 {
-                    _logger.LogInformation($"✅ Return Order {orderId} confirmée");
-                    await _jsonOutService.LogSuccessAsync($"RET_{orderId}", responseContent);
+                    _logger.LogInformation($"✅ Return Order {returnId} confirmée avec succès");
+                    await _jsonOutService.LogSuccessAsync($"RETURN_STATUS_{returnId}", responseContent);
+
+                    await UpdateReturnOrderLinesInt3PLStatusAsync(token, returnId, int3plStatus);
+
                     return true;
                 }
                 else
                 {
                     var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
-                    _logger.LogError($"❌ Erreur Return Order {orderId}: {errorMessage}");
-                    await _jsonOutService.LogErrorAsync($"RET_{orderId}", jsonPayload, errorMessage, (int)response.StatusCode);
+                    _logger.LogError($"❌ Erreur Return Order {returnId}: {errorMessage}");
+                    await _jsonOutService.LogErrorAsync($"RETURN_STATUS_{returnId}", jsonPayload, errorMessage, (int)response.StatusCode);
                     return false;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Exception Return Order {orderId}");
-                await _jsonOutService.LogErrorAsync($"RET_{orderId}", "", ex.Message);
+                _logger.LogError(ex, $"❌ Exception Return Order {returnId}");
+                await _jsonOutService.LogErrorAsync($"RETURN_STATUS_{returnId}", "", ex.Message);
                 return false;
             }
         }
 
         /// <summary>
-        /// Confirme une commande de transfert (Transfer Order)
+        /// Confirme une Transfer Order et met à jour INT3PLStatus
         /// </summary>
-        public async Task<bool> ConfirmTransferOrderAsync(string token, string orderId)
+        public async Task<bool> ConfirmTransferOrderWithStatusUpdateAsync(string token, string transferId, string int3plStatus = "Processed")
         {
             try
             {
-                _logger.LogInformation($"📤 Confirmation Transfer Order: {orderId}");
+                _logger.LogInformation($"📤 Confirmation Transfer Order avec INT3PLStatus: {transferId}");
 
                 var endpoint = $"{_baseUrl}/api/services/BRINT32ServiceGroup/BRINT32Service/updateTransferOrderStatus";
 
                 var payload = new
                 {
-                    _dataAresId = "BR",
-                    _id = orderId,
+                    _dataAreaId = "BR",
+                    _id = transferId,
                     _status = 2  // Processed
                 };
 
@@ -397,7 +349,7 @@ namespace DynamicsApiToDatabase.Services
                     PropertyNamingPolicy = null
                 });
 
-                await _jsonOutService.LogJsonSentAsync($"TRANS_{orderId}", jsonPayload, endpoint);
+                await _jsonOutService.LogJsonSentAsync($"TRANSFER_STATUS_{transferId}", jsonPayload, endpoint);
 
                 _httpClient.DefaultRequestHeaders.Clear();
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
@@ -405,134 +357,437 @@ namespace DynamicsApiToDatabase.Services
 
                 var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-                _logger.LogDebug($"🔍 Envoi vers: {endpoint}");
-                _logger.LogDebug($"📋 Payload: {jsonPayload}");
-
                 var response = await _httpClient.PostAsync(endpoint, content);
                 var responseContent = await response.Content.ReadAsStringAsync();
 
                 if (response.IsSuccessStatusCode)
                 {
-                    _logger.LogInformation($"✅ Transfer Order {orderId} confirmée");
-                    await _jsonOutService.LogSuccessAsync($"TRANS_{orderId}", responseContent);
+                    _logger.LogInformation($"✅ Transfer Order {transferId} confirmée avec succès");
+                    await _jsonOutService.LogSuccessAsync($"TRANSFER_STATUS_{transferId}", responseContent);
+
+                    await UpdateTransferOrderLinesInt3PLStatusAsync(token, transferId, int3plStatus);
+
                     return true;
                 }
                 else
                 {
                     var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
-                    _logger.LogError($"❌ Erreur Transfer Order {orderId}: {errorMessage}");
-                    await _jsonOutService.LogErrorAsync($"TRANS_{orderId}", jsonPayload, errorMessage, (int)response.StatusCode);
+                    _logger.LogError($"❌ Erreur Transfer Order {transferId}: {errorMessage}");
+                    await _jsonOutService.LogErrorAsync($"TRANSFER_STATUS_{transferId}", jsonPayload, errorMessage, (int)response.StatusCode);
                     return false;
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Exception Transfer Order {orderId}");
-                await _jsonOutService.LogErrorAsync($"TRANS_{orderId}", "", ex.Message);
+                _logger.LogError(ex, $"❌ Exception Transfer Order {transferId}");
+                await _jsonOutService.LogErrorAsync($"TRANSFER_STATUS_{transferId}", "", ex.Message);
                 return false;
             }
         }
 
         /// <summary>
-        /// Confirme plusieurs commandes d'achat
+        /// Confirme plusieurs Purchase Orders avec mise à jour INT3PLStatus
         /// </summary>
-        public async Task<int> ConfirmMultiplePurchaseOrdersAsync(string token, List<string> orderIds)
+        public async Task<int> ConfirmMultiplePurchaseOrdersWithStatusAsync(string token, List<string> purchaseOrderIds, string int3plStatus = "Processed")
         {
             var successCount = 0;
-            int totalCount = orderIds.Count;
+            var totalCount = purchaseOrderIds.Count;
 
-            _logger.LogInformation($"📤 Début confirmation pour {totalCount} Purchase Orders...");
+            _logger.LogInformation($"📤 Début confirmation de {totalCount} Purchase Orders avec INT3PLStatus...");
 
-            for (int i = 0; i < orderIds.Count; i++)
+            for (int i = 0; i < purchaseOrderIds.Count; i++)
             {
-                var orderId = orderIds[i];
-                bool success = await ConfirmPurchaseOrderAsync(token, orderId);
+                var purchId = purchaseOrderIds[i];
 
-                if (success)
+                try
                 {
-                    successCount++;
-                }
+                    var success = await ConfirmPurchaseOrderWithStatusUpdateAsync(token, purchId, int3plStatus);
 
-                if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                    if (success)
+                    {
+                        successCount++;
+                    }
+
+                    if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                    {
+                        _logger.LogInformation($"📊 Progrès Purchase Orders: {i + 1}/{totalCount} traitées ({successCount} confirmées)");
+                    }
+
+                    await Task.Delay(300);
+                }
+                catch (Exception ex)
                 {
-                    _logger.LogInformation($"📊 Progrès Purchase: {i + 1}/{totalCount} commandes traitées ({successCount} confirmées)");
+                    _logger.LogError(ex, $"❌ Erreur lors de la confirmation Purchase Order {purchId}");
                 }
-
-                await Task.Delay(200);
             }
 
             var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
-            _logger.LogInformation($"✅ Purchase Orders: {successCount}/{totalCount} confirmées ({successRate:F1}% succès)");
+            _logger.LogInformation($"✅ Purchase Orders confirmées: {successCount}/{totalCount} ({successRate:F1}% succès)");
 
             return successCount;
         }
 
         /// <summary>
-        /// Confirme plusieurs commandes de retour
+        /// Confirme plusieurs Return Orders avec mise à jour INT3PLStatus
         /// </summary>
-        public async Task<int> ConfirmMultipleReturnOrdersAsync(string token, List<string> orderIds)
+        public async Task<int> ConfirmMultipleReturnOrdersWithStatusAsync(string token, List<string> returnOrderIds, string int3plStatus = "Processed")
         {
             var successCount = 0;
-            int totalCount = orderIds.Count;
+            var totalCount = returnOrderIds.Count;
 
-            _logger.LogInformation($"📤 Début confirmation pour {totalCount} Return Orders...");
+            _logger.LogInformation($"📤 Début confirmation de {totalCount} Return Orders avec INT3PLStatus...");
 
-            for (int i = 0; i < orderIds.Count; i++)
+            for (int i = 0; i < returnOrderIds.Count; i++)
             {
-                var orderId = orderIds[i];
-                bool success = await ConfirmReturnOrderAsync(token, orderId);
+                var returnId = returnOrderIds[i];
 
-                if (success)
+                try
                 {
-                    successCount++;
-                }
+                    var success = await ConfirmReturnOrderWithStatusUpdateAsync(token, returnId, int3plStatus);
 
-                if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                    if (success)
+                    {
+                        successCount++;
+                    }
+
+                    if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                    {
+                        _logger.LogInformation($"📊 Progrès Return Orders: {i + 1}/{totalCount} traitées ({successCount} confirmées)");
+                    }
+
+                    await Task.Delay(300);
+                }
+                catch (Exception ex)
                 {
-                    _logger.LogInformation($"📊 Progrès Return: {i + 1}/{totalCount} commandes traitées ({successCount} confirmées)");
+                    _logger.LogError(ex, $"❌ Erreur lors de la confirmation Return Order {returnId}");
                 }
-
-                await Task.Delay(200);
             }
 
             var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
-            _logger.LogInformation($"✅ Return Orders: {successCount}/{totalCount} confirmées ({successRate:F1}% succès)");
+            _logger.LogInformation($"✅ Return Orders confirmées: {successCount}/{totalCount} ({successRate:F1}% succès)");
 
             return successCount;
         }
 
         /// <summary>
-        /// Confirme plusieurs commandes de transfert
+        /// Confirme plusieurs Transfer Orders avec mise à jour INT3PLStatus
         /// </summary>
-        public async Task<int> ConfirmMultipleTransferOrdersAsync(string token, List<string> orderIds)
+        public async Task<int> ConfirmMultipleTransferOrdersWithStatusAsync(string token, List<string> transferOrderIds, string int3plStatus = "Processed")
         {
             var successCount = 0;
-            int totalCount = orderIds.Count;
+            var totalCount = transferOrderIds.Count;
 
-            _logger.LogInformation($"📤 Début confirmation pour {totalCount} Transfer Orders...");
+            _logger.LogInformation($"📤 Début confirmation de {totalCount} Transfer Orders avec INT3PLStatus...");
 
-            for (int i = 0; i < orderIds.Count; i++)
+            for (int i = 0; i < transferOrderIds.Count; i++)
             {
-                var orderId = orderIds[i];
-                bool success = await ConfirmTransferOrderAsync(token, orderId);
+                var transferId = transferOrderIds[i];
 
-                if (success)
+                try
                 {
-                    successCount++;
-                }
+                    var success = await ConfirmTransferOrderWithStatusUpdateAsync(token, transferId, int3plStatus);
 
-                if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                    if (success)
+                    {
+                        successCount++;
+                    }
+
+                    if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                    {
+                        _logger.LogInformation($"📊 Progrès Transfer Orders: {i + 1}/{totalCount} traitées ({successCount} confirmées)");
+                    }
+
+                    await Task.Delay(300);
+                }
+                catch (Exception ex)
                 {
-                    _logger.LogInformation($"📊 Progrès Transfer: {i + 1}/{totalCount} commandes traitées ({successCount} confirmées)");
+                    _logger.LogError(ex, $"❌ Erreur lors de la confirmation Transfer Order {transferId}");
                 }
-
-                await Task.Delay(200);
             }
 
             var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
-            _logger.LogInformation($"✅ Transfer Orders: {successCount}/{totalCount} confirmées ({successRate:F1}% succès)");
+            _logger.LogInformation($"✅ Transfer Orders confirmées: {successCount}/{totalCount} ({successRate:F1}% succès)");
 
             return successCount;
+        }
+
+        // ==========================================
+        // MÉTHODES PRIVÉES
+        // ==========================================
+
+        /// <summary>
+        /// Met à jour INT3PLStatus pour les lignes d'une Purchase Order
+        /// </summary>
+        private async Task UpdatePurchaseOrderLinesInt3PLStatusAsync(string token, string purchId, string int3plStatus)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Purchase Order {purchId}");
+
+                var orderLines = await GetPurchaseOrderLinesAsync(purchId);
+
+                if (orderLines.Count == 0)
+                {
+                    _logger.LogWarning($"⚠️ Aucune ligne trouvée pour Purchase Order {purchId}");
+                    return;
+                }
+
+                foreach (var line in orderLines)
+                {
+                    if (!string.IsNullOrEmpty(line.ItemId))
+                    {
+                        await UpdateItemInt3PLStatusAsync(token, line.ItemId, int3plStatus);
+                    }
+                }
+
+                _logger.LogInformation($"✅ INT3PLStatus mis à jour pour {orderLines.Count} lignes de Purchase Order {purchId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur mise à jour INT3PLStatus Purchase Order {purchId}");
+            }
+        }
+
+        /// <summary>
+        /// Met à jour INT3PLStatus pour les lignes d'une Return Order
+        /// </summary>
+        private async Task UpdateReturnOrderLinesInt3PLStatusAsync(string token, string returnId, string int3plStatus)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Return Order {returnId}");
+
+                var orderLines = await GetReturnOrderLinesAsync(returnId);
+
+                if (orderLines.Count == 0)
+                {
+                    _logger.LogWarning($"⚠️ Aucune ligne trouvée pour Return Order {returnId}");
+                    return;
+                }
+
+                foreach (var line in orderLines)
+                {
+                    if (!string.IsNullOrEmpty(line.ItemId))
+                    {
+                        await UpdateItemInt3PLStatusAsync(token, line.ItemId, int3plStatus);
+                    }
+                }
+
+                _logger.LogInformation($"✅ INT3PLStatus mis à jour pour {orderLines.Count} lignes de Return Order {returnId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur mise à jour INT3PLStatus Return Order {returnId}");
+            }
+        }
+
+        /// <summary>
+        /// Met à jour INT3PLStatus pour les lignes d'une Transfer Order
+        /// </summary>
+        private async Task UpdateTransferOrderLinesInt3PLStatusAsync(string token, string transferId, string int3plStatus)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Transfer Order {transferId}");
+
+                var orderLines = await GetTransferOrderLinesAsync(transferId);
+
+                if (orderLines.Count == 0)
+                {
+                    _logger.LogWarning($"⚠️ Aucune ligne trouvée pour Transfer Order {transferId}");
+                    return;
+                }
+
+                foreach (var line in orderLines)
+                {
+                    if (!string.IsNullOrEmpty(line.ItemId))
+                    {
+                        await UpdateItemInt3PLStatusAsync(token, line.ItemId, int3plStatus);
+                    }
+                }
+
+                _logger.LogInformation($"✅ INT3PLStatus mis à jour pour {orderLines.Count} lignes de Transfer Order {transferId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur mise à jour INT3PLStatus Transfer Order {transferId}");
+            }
+        }
+
+        /// <summary>
+        /// Met à jour INT3PLStatus d'un article spécifique
+        /// </summary>
+        private async Task UpdateItemInt3PLStatusAsync(string token, string itemId, string int3plStatus)
+        {
+            try
+            {
+                var endpoint = $"{_baseUrl}/data/BRINT34ReleasedProducts(dataAreaId='BR',ItemId='{itemId}')";
+
+                var payload = new
+                {
+                    INT3PLStatus = int3plStatus
+                };
+
+                var jsonPayload = JsonSerializer.Serialize(payload);
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                var response = await _httpClient.PatchAsync(endpoint, content);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug($"✅ INT3PLStatus mis à jour pour l'article {itemId}: {int3plStatus}");
+                    await _jsonOutService.LogSuccessAsync($"INT3PL_{itemId}", $"INT3PLStatus updated to {int3plStatus}");
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning($"⚠️ Erreur mise à jour INT3PLStatus pour {itemId}: {response.StatusCode} - {errorContent}");
+                    await _jsonOutService.LogErrorAsync($"INT3PL_{itemId}", jsonPayload, errorContent, (int)response.StatusCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception mise à jour INT3PLStatus pour {itemId}");
+                await _jsonOutService.LogErrorAsync($"INT3PL_{itemId}", "", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Récupère les lignes d'une Purchase Order depuis la base de données
+        /// </summary>
+        private async Task<List<OrderLine>> GetPurchaseOrderLinesAsync(string purchId)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+                var orderLines = await sqlServerService.GetPurchaseOrderLinesAsync(purchId);
+
+                return orderLines.Select(line => new OrderLine
+                {
+                    ItemId = line.ItemId,
+                    OrderId = line.OrderId,
+                    LineNumber = line.LineNumber,
+                    Quantity = line.Quantity,
+                    Status = line.Status
+                }).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Purchase Order {purchId}");
+                return new List<OrderLine>();
+            }
+        }
+
+        /// <summary>
+        private async Task<List<OrderLine>> GetReturnOrderLinesAsync(string returnId)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+                var orderLines = await sqlServerService.GetReturnOrderLinesAsync(returnId);
+
+                return orderLines.Select(line => new OrderLine
+                {
+                    ItemId = line.ItemId,
+                    OrderId = line.OrderId,
+                    LineNumber = line.LineNumber,
+                    Quantity = line.Quantity,
+                    Status = line.Status
+                }).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Return Order {returnId}");
+                return new List<OrderLine>();
+            }
+        }
+
+        private async Task<List<OrderLine>> GetTransferOrderLinesAsync(string transferId)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+                var orderLines = await sqlServerService.GetTransferOrderLinesAsync(transferId);
+
+                return orderLines.Select(line => new OrderLine
+                {
+                    ItemId = line.ItemId,
+                    OrderId = line.OrderId,
+                    LineNumber = line.LineNumber,
+                    Quantity = line.Quantity,
+                    Status = line.Status
+                }).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Transfer Order {transferId}");
+                return new List<OrderLine>();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Classe pour représenter une ligne de commande
+    /// </summary>
+    public class OrderLine
+    {
+        public string ItemId { get; set; } = "";
+        public string OrderId { get; set; } = "";
+        public int LineNumber { get; set; }
+        public decimal Quantity { get; set; }
+        public string Status { get; set; } = "";
+    }
+
+    /// <summary>
+    /// Résultat de confirmation de commandes avec statistiques
+    /// </summary>
+    public class OrderConfirmationResult
+    {
+        public string OrderType { get; set; } = "";
+        public int TotalOrders { get; set; }
+        public int ConfirmedOrders { get; set; }
+        public DateTime StartTime { get; set; }
+        public DateTime EndTime { get; set; }
+        public bool Success { get; set; }
+        public string ErrorMessage { get; set; } = "";
+
+        public int FailedOrders => TotalOrders - ConfirmedOrders;
+        public double SuccessRate => TotalOrders > 0 ? (double)ConfirmedOrders / TotalOrders * 100 : 0;
+        public TimeSpan Duration => EndTime - StartTime;
+
+        public string GetSummary()
+        {
+            var status = Success ? "✅" : "❌";
+            return $"{status} {OrderType}: {ConfirmedOrders}/{TotalOrders} confirmées ({SuccessRate:F1}%) en {Duration.TotalSeconds:F1}s";
+        }
+
+        public string GetDetailedReport()
+        {
+            var report = $"📊 RAPPORT CONFIRMATION {OrderType.ToUpper()}\n";
+            report += $"   📅 Période: {StartTime:dd/MM/yyyy HH:mm:ss} - {EndTime:dd/MM/yyyy HH:mm:ss}\n";
+            report += $"   ⏱️ Durée: {Duration.TotalMinutes:F1} minutes\n";
+            report += $"   📦 Total commandes: {TotalOrders}\n";
+            report += $"   ✅ Confirmées: {ConfirmedOrders}\n";
+            report += $"   ❌ Échecs: {FailedOrders}\n";
+            report += $"   📈 Taux de succès: {SuccessRate:F1}%\n";
+
+            if (!Success)
+            {
+                report += $"   💥 Erreur: {ErrorMessage}\n";
+            }
+
+            return report;
         }
     }
 }

@@ -407,6 +407,291 @@ namespace DynamicsApiToDatabase.Services
         {
             return await _databaseService.GetStatisticsAsync();
         }
+
+        /// <summary>
+        /// Synchronise un endpoint avec confirmations automatiques des commandes
+        /// </summary>
+        public async Task<SyncResult> SyncEndpointWithOrderConfirmationAsync(string endpointName, string endpointPath, string primaryKeyField = "ItemId")
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var result = new SyncResult { EndpointName = endpointName };
+
+            try
+            {
+                _logger.LogInformation($"🔄 Début synchronisation {endpointName} avec confirmations...");
+
+                var token = await _authService.GetAccessTokenAsync();
+                if (string.IsNullOrEmpty(token))
+                {
+                    throw new Exception("Impossible d'obtenir le token d'authentification");
+                }
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+
+                var apiData = await FetchAllDataFromEndpointAsync(endpointPath);
+                _logger.LogInformation($"📊 {apiData.Count} enregistrements récupérés de l'API {endpointName}");
+
+                if (apiData.Count == 0)
+                {
+                    _logger.LogWarning($"⚠️ Aucune donnée récupérée pour {endpointName}");
+                    return result;
+                }
+
+                var currentKeys = new List<string>();
+                var orderIds = new HashSet<string>();
+
+                // Traiter chaque enregistrement
+                foreach (var item in apiData)
+                {
+                    var uniqueKey = GenerateUniqueKey(item, primaryKeyField, endpointName);
+                    currentKeys.Add(uniqueKey);
+
+                    var processResult = await ProcessSingleRecordAsync(uniqueKey, item, endpointPath, result);
+
+                    // Extraire les IDs de commandes pour confirmation
+                    if (processResult.Success)
+                    {
+                        var orderId = ExtractOrderId(item, endpointName);
+                        if (!string.IsNullOrEmpty(orderId))
+                        {
+                            orderIds.Add(orderId);
+                        }
+                    }
+                }
+
+                // Confirmer les commandes selon le type d'endpoint
+                if (orderIds.Count > 0)
+                {
+                    await ConfirmOrdersByTypeAsync(token, endpointName, orderIds.ToList());
+                }
+
+                // Marquer les enregistrements supprimés
+                var deletedCount = await _databaseService.MarkMissingRecordsAsDeletedAsync(endpointPath, currentKeys);
+                result.DeletedRecords = deletedCount;
+
+                result.Success = true;
+                stopwatch.Stop();
+                result.Duration = stopwatch.Elapsed;
+
+                _logger.LogInformation($"✅ {endpointName} synchronisé avec confirmations: {result.NewRecords} nouveaux, {result.UpdatedRecords} modifiés, {result.UnchangedRecords} inchangés, {result.DeletedRecords} supprimés, {orderIds.Count} commandes confirmées en {result.Duration.TotalSeconds:F1}s");
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                result.Success = false;
+                result.ErrorMessage = ex.Message;
+                stopwatch.Stop();
+                result.Duration = stopwatch.Elapsed;
+
+                _logger.LogError(ex, $"❌ Erreur lors de la synchronisation de {endpointName}");
+                return result;
+            }
+        }
+
+        /// <summary>
+        /// Extrait l'ID de commande selon le type d'endpoint
+        /// </summary>
+        private string ExtractOrderId(JsonElement item, string endpointName)
+        {
+            try
+            {
+                return endpointName.ToUpper() switch
+                {
+                    "PURCHASEORDERS" or "BRINT32PURCHORDERTABLES" =>
+                        item.TryGetProperty("PurchId", out var purchId) ? purchId.GetString() ?? "" : "",
+
+                    "RETURNORDERS" or "BRINT32RETURNORDERTABLES" =>
+                        item.TryGetProperty("ReturnItemNum", out var returnId) ? returnId.GetString() ?? "" : "",
+
+                    "TRANSFERORDERS" or "BRINT32TRANSFERORDERTABLES" =>
+                        item.TryGetProperty("TransferId", out var transferId) ? transferId.GetString() ?? "" : "",
+
+                    _ => ""
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, $"Impossible d'extraire l'ID de commande pour {endpointName}");
+                return "";
+            }
+        }
+
+        /// <summary>
+        /// Confirme les commandes selon leur type
+        /// </summary>
+        private async Task ConfirmOrdersByTypeAsync(string token, string endpointName, List<string> orderIds)
+        {
+            try
+            {
+                var confirmedCount = 0;
+
+                switch (endpointName.ToUpper())
+                {
+                    case "PURCHASEORDERS":
+                    case "BRINT32PURCHORDERTABLES":
+                        _logger.LogInformation($"📤 Confirmation de {orderIds.Count} Purchase Orders...");
+                        confirmedCount = await _statusConfirmationService.ConfirmMultiplePurchaseOrdersWithStatusAsync(token, orderIds);
+                        break;
+
+                    case "RETURNORDERS":
+                    case "BRINT32RETURNORDERTABLES":
+                        _logger.LogInformation($"📤 Confirmation de {orderIds.Count} Return Orders...");
+                        confirmedCount = await _statusConfirmationService.ConfirmMultipleReturnOrdersWithStatusAsync(token, orderIds);
+                        break;
+
+                    case "TRANSFERORDERS":
+                    case "BRINT32TRANSFERORDERTABLES":
+                        _logger.LogInformation($"📤 Confirmation de {orderIds.Count} Transfer Orders...");
+                        confirmedCount = await _statusConfirmationService.ConfirmMultipleTransferOrdersWithStatusAsync(token, orderIds);
+                        break;
+
+                    default:
+                        _logger.LogWarning($"⚠️ Type de commande non reconnu pour confirmation: {endpointName}");
+                        break;
+                }
+
+                if (confirmedCount > 0)
+                {
+                    _logger.LogInformation($"✅ {confirmedCount}/{orderIds.Count} commandes {endpointName} confirmées avec succès");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur lors de la confirmation des commandes {endpointName}");
+            }
+        }
+
+        /// <summary>
+        /// Synchronise tous les endpoints avec confirmations automatiques
+        /// </summary>
+        public async Task<List<SyncResult>> SyncAllEndpointsWithOrderConfirmationsAsync()
+        {
+            var endpoints = GetConfiguredEndpoints();
+            var results = new List<SyncResult>();
+
+            _logger.LogInformation($"🚀 Début synchronisation de {endpoints.Count} endpoints avec confirmations");
+
+            foreach (var endpoint in endpoints)
+            {
+                SyncResult result;
+
+                // Utiliser la méthode avec confirmations pour les commandes
+                if (endpoint.Name.ToUpper().Contains("ORDER"))
+                {
+                    result = await SyncEndpointWithOrderConfirmationAsync(endpoint.Name, endpoint.Path, endpoint.PrimaryKeyField);
+                }
+                else
+                {
+                    // Utiliser la méthode standard pour les articles
+                    result = await SyncEndpointAsync(endpoint.Name, endpoint.Path, endpoint.PrimaryKeyField);
+                }
+
+                results.Add(result);
+                await Task.Delay(1000); // Pause entre les endpoints
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Confirme toutes les commandes actives d'un type spécifique
+        /// </summary>
+        public async Task<int> ConfirmAllActiveOrdersOfTypeAsync(string orderType)
+        {
+            try
+            {
+                var token = await _authService.GetAccessTokenAsync();
+                if (string.IsNullOrEmpty(token))
+                {
+                    throw new Exception("Impossible d'obtenir le token d'authentification");
+                }
+
+                var confirmedCount = 0;
+
+                switch (orderType.ToUpper())
+                {
+                    case "PURCHASE":
+                        var purchaseOrders = await _databaseService.GetActivePurchaseOrderIdsAsync();
+                        if (purchaseOrders.Count > 0)
+                        {
+                            _logger.LogInformation($"📤 Confirmation de {purchaseOrders.Count} Purchase Orders actives...");
+                            confirmedCount = await _statusConfirmationService.ConfirmMultiplePurchaseOrdersWithStatusAsync(token, purchaseOrders);
+                        }
+                        break;
+
+                    case "RETURN":
+                        var returnOrders = await _databaseService.GetActiveReturnOrderIdsAsync();
+                        if (returnOrders.Count > 0)
+                        {
+                            _logger.LogInformation($"📤 Confirmation de {returnOrders.Count} Return Orders actives...");
+                            confirmedCount = await _statusConfirmationService.ConfirmMultipleReturnOrdersWithStatusAsync(token, returnOrders);
+                        }
+                        break;
+
+                    case "TRANSFER":
+                        var transferOrders = await _databaseService.GetActiveTransferOrderIdsAsync();
+                        if (transferOrders.Count > 0)
+                        {
+                            _logger.LogInformation($"📤 Confirmation de {transferOrders.Count} Transfer Orders actives...");
+                            confirmedCount = await _statusConfirmationService.ConfirmMultipleTransferOrdersWithStatusAsync(token, transferOrders);
+                        }
+                        break;
+
+                    default:
+                        _logger.LogWarning($"⚠️ Type de commande non reconnu: {orderType}");
+                        break;
+                }
+
+                _logger.LogInformation($"✅ {confirmedCount} commandes {orderType} confirmées au total");
+                return confirmedCount;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur lors de la confirmation des commandes {orderType}");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Confirme toutes les commandes actives (tous types)
+        /// </summary>
+        public async Task<Dictionary<string, int>> ConfirmAllActiveOrdersAsync()
+        {
+            var results = new Dictionary<string, int>();
+
+            try
+            {
+                _logger.LogInformation("🚀 Début confirmation de toutes les commandes actives...");
+
+                // Confirmer les Purchase Orders
+                var purchaseCount = await ConfirmAllActiveOrdersOfTypeAsync("PURCHASE");
+                results["Purchase"] = purchaseCount;
+
+                await Task.Delay(2000); // Pause entre les types
+
+                // Confirmer les Return Orders
+                var returnCount = await ConfirmAllActiveOrdersOfTypeAsync("RETURN");
+                results["Return"] = returnCount;
+
+                await Task.Delay(2000); // Pause entre les types
+
+                // Confirmer les Transfer Orders
+                var transferCount = await ConfirmAllActiveOrdersOfTypeAsync("TRANSFER");
+                results["Transfer"] = transferCount;
+
+                var totalConfirmed = purchaseCount + returnCount + transferCount;
+                _logger.LogInformation($"🎯 Confirmation terminée: {totalConfirmed} commandes au total (Purchase: {purchaseCount}, Return: {returnCount}, Transfer: {transferCount})");
+
+                return results;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors de la confirmation globale des commandes");
+                return results;
+            }
+        }
     }
 
     /// <summary>

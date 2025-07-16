@@ -16,9 +16,10 @@ namespace DynamicsApiToDatabase
         static async Task Main(string[] args)
         {
             Console.WriteLine("=== API_BIOR - Synchronisation Dynamics 365 vers SQL Server ===");
-            Console.WriteLine("Version SQL Server - Table JSON_IN");
+            Console.WriteLine("Version SQL Server avec confirmations commandes - Table JSON_IN");
             Console.WriteLine("Base de données: 7.2.160.173 - Middleware");
-            Console.WriteLine("Client: BR | Environnement: SPEED\n");
+            Console.WriteLine("Client: BR | Environnement: SPEED");
+            Console.WriteLine("🔄 NOUVEAU: Confirmations automatiques Purchase/Return/Transfer Orders avec INT3PLStatus\n");
 
             try
             {
@@ -37,7 +38,7 @@ namespace DynamicsApiToDatabase
                     return;
                 }
 
-                // ✅ OPTIMISATION: Vérifier/créer la colonne JSON_SENT
+                // ✅ Vérifier/créer la colonne JSON_SENT
                 if (!await sqlServerService.EnsureConfirmationColumnExistsAsync())
                 {
                     Console.WriteLine("⚠️ Problème avec la colonne JSON_SENT, mais on continue...");
@@ -61,19 +62,25 @@ namespace DynamicsApiToDatabase
                 Console.WriteLine("✅ Authentification Azure réussie\n");
 
                 var dataService = serviceProvider.GetService<DynamicsDataService>();
+                var statusConfirmationService = serviceProvider.GetService<StatusConfirmationService>();
 
                 await DisplayPreSyncStatisticsAsync(sqlServerService);
 
-                Console.WriteLine("🚀 === DÉBUT SYNCHRONISATION === 🚀\n");
+                Console.WriteLine("🚀 === DÉBUT SYNCHRONISATION AVEC CONFIRMATIONS === 🚀\n");
 
-                var syncResults = await dataService.SyncAllEndpointsAsync();
+                // ✅ NOUVELLE MÉTHODE: Synchronisation avec confirmations automatiques
+                var syncResults = await dataService.SyncAllEndpointsWithOrderConfirmationsAsync();
 
                 Console.WriteLine("\n📊 === RÉSULTATS DE SYNCHRONISATION === 📊");
                 await DisplaySyncResultsAsync(syncResults, sqlServerService);
 
+                // ✅ NOUVELLE SECTION: Confirmation additionnelle des commandes en attente
+                Console.WriteLine("\n🔄 === CONFIRMATION COMMANDES EN ATTENTE === 🔄");
+                await ConfirmPendingOrdersAsync(dataService, statusConfirmationService, token);
+
                 globalStopwatch.Stop();
                 Console.WriteLine($"\n⏱️ Durée totale: {globalStopwatch.Elapsed.TotalMinutes:F1} minutes");
-                Console.WriteLine("✅ === SYNCHRONISATION TERMINÉE === ✅");
+                Console.WriteLine("✅ === SYNCHRONISATION AVEC CONFIRMATIONS TERMINÉE === ✅");
 
                 // 🚀 LANCEMENT DU PROGRAMME EXTERNE
                 Console.WriteLine("\n🔄 === LANCEMENT DU TRANSLATOR === 🔄");
@@ -98,7 +105,6 @@ namespace DynamicsApiToDatabase
                 }
 
                 Console.WriteLine("\n🎯 === PROCESSUS COMPLET TERMINÉ === 🎯");
-
             }
             catch (Exception ex)
             {
@@ -111,6 +117,92 @@ namespace DynamicsApiToDatabase
             {
                 Console.WriteLine("\nAppuyez sur une touche pour fermer...");
                 Console.ReadKey();
+            }
+        }
+
+        /// <summary>
+        /// Nouvelle méthode pour confirmer les commandes en attente
+        /// </summary>
+        private static async Task ConfirmPendingOrdersAsync(DynamicsDataService dataService, StatusConfirmationService statusConfirmationService, string token)
+        {
+            try
+            {
+                Console.WriteLine("🔍 Vérification des commandes en attente de confirmation...");
+
+                // Confirmer toutes les commandes actives par type
+                var confirmationResults = await dataService.ConfirmAllActiveOrdersAsync();
+
+                Console.WriteLine("\n📈 === RÉSULTATS CONFIRMATIONS === 📈");
+
+                var totalConfirmed = 0;
+                foreach (var result in confirmationResults)
+                {
+                    var orderType = result.Key;
+                    var confirmedCount = result.Value;
+                    totalConfirmed += confirmedCount;
+
+                    var icon = confirmedCount > 0 ? "✅" : "➖";
+                    Console.WriteLine($"{icon} {orderType} Orders: {confirmedCount} confirmées");
+                }
+
+                if (totalConfirmed > 0)
+                {
+                    Console.WriteLine($"🎯 Total confirmations: {totalConfirmed} commandes");
+                }
+                else
+                {
+                    Console.WriteLine("ℹ️ Aucune commande en attente de confirmation");
+                }
+
+                // Optionnel: Confirmer spécifiquement les commandes par type si nécessaire
+                if (totalConfirmed == 0)
+                {
+                    Console.WriteLine("🔍 Recherche de commandes spécifiques...");
+
+                    // Essayer de confirmer les commandes une par une si la méthode globale n'a rien trouvé
+                    await TrySpecificOrderConfirmationsAsync(statusConfirmationService, token);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Erreur lors de la confirmation des commandes: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Essaye de confirmer des commandes spécifiques pour diagnostic
+        /// </summary>
+        private static async Task TrySpecificOrderConfirmationsAsync(StatusConfirmationService statusConfirmationService, string token)
+        {
+            try
+            {
+                Console.WriteLine("🧪 Test de confirmation avec commandes d'exemple...");
+
+                // Test avec des IDs d'exemple (à adapter selon vos données)
+                var testResults = new List<(string Type, string Id, bool Success)>();
+
+                // Test Purchase Order
+                var purchaseResult = await statusConfirmationService.ConfirmPurchaseOrderWithStatusUpdateAsync(token, "TEST_PURCH_001");
+                testResults.Add(("Purchase", "TEST_PURCH_001", purchaseResult));
+
+                // Test Return Order
+                var returnResult = await statusConfirmationService.ConfirmReturnOrderWithStatusUpdateAsync(token, "TEST_RET_001");
+                testResults.Add(("Return", "TEST_RET_001", returnResult));
+
+                // Test Transfer Order
+                var transferResult = await statusConfirmationService.ConfirmTransferOrderWithStatusUpdateAsync(token, "TEST_TRANS_001");
+                testResults.Add(("Transfer", "TEST_TRANS_001", transferResult));
+
+                Console.WriteLine("📊 Résultats des tests:");
+                foreach (var (type, id, success) in testResults)
+                {
+                    var icon = success ? "✅" : "❌";
+                    Console.WriteLine($"   {icon} {type} {id}: {(success ? "Confirmé" : "Échec")}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Erreur lors des tests spécifiques: {ex.Message}");
             }
         }
 
