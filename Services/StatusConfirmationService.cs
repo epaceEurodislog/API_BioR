@@ -255,5 +255,284 @@ namespace DynamicsApiToDatabase.Services
 
             return successCount;
         }
+
+        /// <summary>
+        /// Confirme une commande d'achat (Purchase Order)
+        /// </summary>
+        public async Task<bool> ConfirmPurchaseOrderAsync(string token, string orderId)
+        {
+            try
+            {
+                _logger.LogInformation($"📤 Confirmation Purchase Order: {orderId}");
+
+                var endpoint = $"{_baseUrl}/api/services/BRINT32ServiceGroup/BRINT32Service/updatePurchOrderStatus";
+
+                var payload = new
+                {
+                    _dataAresId = "BR",
+                    _id = orderId,
+                    _status = 2  // Processed
+                };
+
+                var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = null
+                });
+
+                await _jsonOutService.LogJsonSentAsync($"PURCH_{orderId}", jsonPayload, endpoint);
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                _logger.LogDebug($"🔍 Envoi vers: {endpoint}");
+                _logger.LogDebug($"📋 Payload: {jsonPayload}");
+
+                var response = await _httpClient.PostAsync(endpoint, content);
+                var responseContent = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"✅ Purchase Order {orderId} confirmée");
+                    await _jsonOutService.LogSuccessAsync($"PURCH_{orderId}", responseContent);
+                    return true;
+                }
+                else
+                {
+                    var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
+                    _logger.LogError($"❌ Erreur Purchase Order {orderId}: {errorMessage}");
+                    await _jsonOutService.LogErrorAsync($"PURCH_{orderId}", jsonPayload, errorMessage, (int)response.StatusCode);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception Purchase Order {orderId}");
+                await _jsonOutService.LogErrorAsync($"PURCH_{orderId}", "", ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Confirme une commande de retour (Return Order)
+        /// </summary>
+        public async Task<bool> ConfirmReturnOrderAsync(string token, string orderId)
+        {
+            try
+            {
+                _logger.LogInformation($"📤 Confirmation Return Order: {orderId}");
+
+                var endpoint = $"{_baseUrl}/api/services/BRINT32ServiceGroup/BRINT32Service/updateReturnOrderStatus";
+
+                var payload = new
+                {
+                    _dataAresId = "BR",
+                    _id = orderId,
+                    _status = 2  // Processed
+                };
+
+                var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = null
+                });
+
+                await _jsonOutService.LogJsonSentAsync($"RET_{orderId}", jsonPayload, endpoint);
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                _logger.LogDebug($"🔍 Envoi vers: {endpoint}");
+                _logger.LogDebug($"📋 Payload: {jsonPayload}");
+
+                var response = await _httpClient.PostAsync(endpoint, content);
+                var responseContent = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"✅ Return Order {orderId} confirmée");
+                    await _jsonOutService.LogSuccessAsync($"RET_{orderId}", responseContent);
+                    return true;
+                }
+                else
+                {
+                    var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
+                    _logger.LogError($"❌ Erreur Return Order {orderId}: {errorMessage}");
+                    await _jsonOutService.LogErrorAsync($"RET_{orderId}", jsonPayload, errorMessage, (int)response.StatusCode);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception Return Order {orderId}");
+                await _jsonOutService.LogErrorAsync($"RET_{orderId}", "", ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Confirme une commande de transfert (Transfer Order)
+        /// </summary>
+        public async Task<bool> ConfirmTransferOrderAsync(string token, string orderId)
+        {
+            try
+            {
+                _logger.LogInformation($"📤 Confirmation Transfer Order: {orderId}");
+
+                var endpoint = $"{_baseUrl}/api/services/BRINT32ServiceGroup/BRINT32Service/updateTransferOrderStatus";
+
+                var payload = new
+                {
+                    _dataAresId = "BR",
+                    _id = orderId,
+                    _status = 2  // Processed
+                };
+
+                var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = null
+                });
+
+                await _jsonOutService.LogJsonSentAsync($"TRANS_{orderId}", jsonPayload, endpoint);
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                _logger.LogDebug($"🔍 Envoi vers: {endpoint}");
+                _logger.LogDebug($"📋 Payload: {jsonPayload}");
+
+                var response = await _httpClient.PostAsync(endpoint, content);
+                var responseContent = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"✅ Transfer Order {orderId} confirmée");
+                    await _jsonOutService.LogSuccessAsync($"TRANS_{orderId}", responseContent);
+                    return true;
+                }
+                else
+                {
+                    var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
+                    _logger.LogError($"❌ Erreur Transfer Order {orderId}: {errorMessage}");
+                    await _jsonOutService.LogErrorAsync($"TRANS_{orderId}", jsonPayload, errorMessage, (int)response.StatusCode);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception Transfer Order {orderId}");
+                await _jsonOutService.LogErrorAsync($"TRANS_{orderId}", "", ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Confirme plusieurs commandes d'achat
+        /// </summary>
+        public async Task<int> ConfirmMultiplePurchaseOrdersAsync(string token, List<string> orderIds)
+        {
+            var successCount = 0;
+            int totalCount = orderIds.Count;
+
+            _logger.LogInformation($"📤 Début confirmation pour {totalCount} Purchase Orders...");
+
+            for (int i = 0; i < orderIds.Count; i++)
+            {
+                var orderId = orderIds[i];
+                bool success = await ConfirmPurchaseOrderAsync(token, orderId);
+
+                if (success)
+                {
+                    successCount++;
+                }
+
+                if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                {
+                    _logger.LogInformation($"📊 Progrès Purchase: {i + 1}/{totalCount} commandes traitées ({successCount} confirmées)");
+                }
+
+                await Task.Delay(200);
+            }
+
+            var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
+            _logger.LogInformation($"✅ Purchase Orders: {successCount}/{totalCount} confirmées ({successRate:F1}% succès)");
+
+            return successCount;
+        }
+
+        /// <summary>
+        /// Confirme plusieurs commandes de retour
+        /// </summary>
+        public async Task<int> ConfirmMultipleReturnOrdersAsync(string token, List<string> orderIds)
+        {
+            var successCount = 0;
+            int totalCount = orderIds.Count;
+
+            _logger.LogInformation($"📤 Début confirmation pour {totalCount} Return Orders...");
+
+            for (int i = 0; i < orderIds.Count; i++)
+            {
+                var orderId = orderIds[i];
+                bool success = await ConfirmReturnOrderAsync(token, orderId);
+
+                if (success)
+                {
+                    successCount++;
+                }
+
+                if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                {
+                    _logger.LogInformation($"📊 Progrès Return: {i + 1}/{totalCount} commandes traitées ({successCount} confirmées)");
+                }
+
+                await Task.Delay(200);
+            }
+
+            var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
+            _logger.LogInformation($"✅ Return Orders: {successCount}/{totalCount} confirmées ({successRate:F1}% succès)");
+
+            return successCount;
+        }
+
+        /// <summary>
+        /// Confirme plusieurs commandes de transfert
+        /// </summary>
+        public async Task<int> ConfirmMultipleTransferOrdersAsync(string token, List<string> orderIds)
+        {
+            var successCount = 0;
+            int totalCount = orderIds.Count;
+
+            _logger.LogInformation($"📤 Début confirmation pour {totalCount} Transfer Orders...");
+
+            for (int i = 0; i < orderIds.Count; i++)
+            {
+                var orderId = orderIds[i];
+                bool success = await ConfirmTransferOrderAsync(token, orderId);
+
+                if (success)
+                {
+                    successCount++;
+                }
+
+                if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                {
+                    _logger.LogInformation($"📊 Progrès Transfer: {i + 1}/{totalCount} commandes traitées ({successCount} confirmées)");
+                }
+
+                await Task.Delay(200);
+            }
+
+            var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
+            _logger.LogInformation($"✅ Transfer Orders: {successCount}/{totalCount} confirmées ({successRate:F1}% succès)");
+
+            return successCount;
+        }
     }
 }

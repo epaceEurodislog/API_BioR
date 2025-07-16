@@ -18,6 +18,7 @@ secrets.json
 bin/
 obj/
 out/
+exports/
 
 # Fichiers de build
 *.dll

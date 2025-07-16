@@ -297,6 +297,7 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Génère une clé unique pour chaque enregistrement
         /// </summary>
+        // ✅ CORRIGÉ : Clés incluant dataAreaId pour éviter les conflits
         private string GenerateUniqueKey(JsonElement item, string primaryKeyField, string endpointName)
         {
             try
@@ -305,54 +306,32 @@ namespace DynamicsApiToDatabase.Services
                 {
                     case "ARTICLES":
                     case "BRINT34RELEASEDPRODUCTS":
-                        if (item.TryGetProperty("ItemId", out var itemId))
+                        if (item.TryGetProperty("ItemId", out var itemId) &&
+                            item.TryGetProperty("dataAreaId", out var dataArea))
                         {
-                            return $"ART_{itemId.GetString()}";
+                            // ✅ Clé unique avec zone : ART_BR_ITEM123
+                            return $"ART_{dataArea.GetString()}_{itemId.GetString()}";
                         }
-                        break;
-
-                    case "RETURNORDERS":
-                    case "BRINT31RETURNORDERLINES":
-                        if (item.TryGetProperty("ReturnItemNum", out var returnNum) &&
-                            item.TryGetProperty("LineNum", out var lineNum))
+                        else if (item.TryGetProperty("ItemId", out var itemIdOnly))
                         {
-                            return $"RET_{returnNum.GetString()}_{lineNum.GetDecimal()}";
-                        }
-                        break;
-
-                    case "PURCHASEORDERS":
-                    case "BRINT32PURCHASEORDERLINES":
-                        if (item.TryGetProperty("PurchaseOrderNumber", out var purchaseNum) &&
-                            item.TryGetProperty("LineNumber", out var purchaseLineNum))
-                        {
-                            return $"PUR_{purchaseNum.GetString()}_{purchaseLineNum.GetDecimal()}";
-                        }
-                        break;
-
-                    case "TRANSFERORDERS":
-                    case "BRINT32TRANSFERORDERTABLES":
-                        if (item.TryGetProperty("TransferId", out var transferId) &&
-                            item.TryGetProperty("LineNumber", out var transferLineNum))
-                        {
-                            return $"TRA_{transferId.GetString()}_{transferLineNum.GetDecimal()}";
+                            // ✅ Fallback avec timestamp pour unicité
+                            var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
+                            return $"ART_BR_{itemIdOnly.GetString()}_{timestamp}";
                         }
                         break;
                 }
 
-                if (item.TryGetProperty(primaryKeyField, out var primaryValue))
-                {
-                    var prefix = endpointName.Substring(0, Math.Min(3, endpointName.Length)).ToUpper();
-                    return $"{prefix}_{primaryValue.GetString()}";
-                }
-
+                // ✅ Pour tous les autres cas, ajouter timestamp
                 var contentHash = ComputeContentHash(item.GetRawText());
-                return $"HASH_{contentHash}";
+                var ts = DateTimeOffset.Now.ToUnixTimeSeconds();
+                return $"HASH_{contentHash}_{ts}";
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, $"Impossible de générer une clé unique pour {endpointName}, utilisation du hash");
+                _logger.LogWarning(ex, $"Erreur génération clé pour {endpointName}");
                 var contentHash = ComputeContentHash(item.GetRawText());
-                return $"HASH_{contentHash}";
+                var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
+                return $"HASH_{contentHash}_{timestamp}"; // ✅ Toujours unique
             }
         }
 

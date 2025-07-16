@@ -193,12 +193,31 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Recherche un enregistrement existant par clé métier + endpoint
         /// </summary>
+        // ✅ CORRIGÉ : Requête qui prend le plus récent OU compte les doublons
         private async Task<(int Id, string Hash)?> GetExistingRecordAsync(SqlConnection connection, string businessKey, string endpoint)
         {
+            // Option A : Prendre le plus récent
             const string sql = @"
-                SELECT JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
-                FROM JSON_IN 
-                WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
+        SELECT TOP 1 JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
+        FROM JSON_IN 
+        WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint
+        ORDER BY JSON_CRDA DESC"; // ✅ Le plus récent en premier
+
+            // Option B : Détecter les doublons
+            const string sqlCheck = @"
+        SELECT COUNT(*) as DoublonCount
+        FROM JSON_IN 
+        WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
+
+            using var checkCommand = new SqlCommand(sqlCheck, connection);
+            checkCommand.Parameters.AddWithValue("@BusinessKey", businessKey);
+            checkCommand.Parameters.AddWithValue("@Endpoint", endpoint);
+
+            var count = (int)await checkCommand.ExecuteScalarAsync();
+            if (count > 1)
+            {
+                _logger.LogWarning($"⚠️ DOUBLON détecté : {count} occurrences pour {businessKey}");
+            }
 
             using var command = new SqlCommand(sql, connection);
             command.Parameters.AddWithValue("@BusinessKey", businessKey);
