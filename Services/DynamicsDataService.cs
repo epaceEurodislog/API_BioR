@@ -295,9 +295,8 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Génère une clé unique pour chaque enregistrement
+        /// Génère une clé unique pour chaque enregistrement - MODIFIÉ avec PackingSlip
         /// </summary>
-        // ✅ CORRIGÉ : Clés incluant dataAreaId pour éviter les conflits
         private string GenerateUniqueKey(JsonElement item, string primaryKeyField, string endpointName)
         {
             try
@@ -309,19 +308,59 @@ namespace DynamicsApiToDatabase.Services
                         if (item.TryGetProperty("ItemId", out var itemId) &&
                             item.TryGetProperty("dataAreaId", out var dataArea))
                         {
-                            // ✅ Clé unique avec zone : ART_BR_ITEM123
                             return $"ART_{dataArea.GetString()}_{itemId.GetString()}";
                         }
                         else if (item.TryGetProperty("ItemId", out var itemIdOnly))
                         {
-                            // ✅ Fallback avec timestamp pour unicité
                             var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
                             return $"ART_BR_{itemIdOnly.GetString()}_{timestamp}";
                         }
                         break;
+
+                    // ✅ NOUVEAU : PackingSlip avec clé unique basée sur WMSTRansRecId
+                    case "SALESORDERS":
+                    case "BRPACKINGSLIPINTERFACES":
+                        if (item.TryGetProperty("WMSTRansRecId", out var wmsRecId) &&
+                            item.TryGetProperty("dataAreaId", out var salesDataArea))
+                        {
+                            return $"SALES_{salesDataArea.GetString()}_{wmsRecId.GetInt64()}";
+                        }
+                        else if (item.TryGetProperty("WMSTRansRecId", out var wmsRecIdOnly))
+                        {
+                            return $"SALES_BR_{wmsRecIdOnly.GetInt64()}";
+                        }
+                        break;
+
+                    // Autres cas existants...
+                    case "RETURNORDERS":
+                    case "BRINT32RETURNORDERTABLES":
+                        if (item.TryGetProperty("ReturnItemNum", out var returnNum) &&
+                            item.TryGetProperty("LineNum", out var returnLine))
+                        {
+                            return $"RET_{returnNum.GetString()}_{returnLine}";
+                        }
+                        break;
+
+                    case "PURCHASEORDERS":
+                    case "BRINT32PURCHORDERTABLES":
+                        if (item.TryGetProperty("PurchId", out var purchId) &&
+                            item.TryGetProperty("LineNumber", out var purchLine))
+                        {
+                            return $"PURCH_{purchId.GetString()}_{purchLine}";
+                        }
+                        break;
+
+                    case "TRANSFERORDERS":
+                    case "BRINT32TRANSFERORDERTABLES":
+                        if (item.TryGetProperty("TransferId", out var transferId) &&
+                            item.TryGetProperty("LineNumber", out var transferLine))
+                        {
+                            return $"TRANS_{transferId.GetString()}_{transferLine}";
+                        }
+                        break;
                 }
 
-                // ✅ Pour tous les autres cas, ajouter timestamp
+                // Fallback avec hash + timestamp pour garantir l'unicité
                 var contentHash = ComputeContentHash(item.GetRawText());
                 var ts = DateTimeOffset.Now.ToUnixTimeSeconds();
                 return $"HASH_{contentHash}_{ts}";
@@ -331,7 +370,7 @@ namespace DynamicsApiToDatabase.Services
                 _logger.LogWarning(ex, $"Erreur génération clé pour {endpointName}");
                 var contentHash = ComputeContentHash(item.GetRawText());
                 var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
-                return $"HASH_{contentHash}_{timestamp}"; // ✅ Toujours unique
+                return $"HASH_{contentHash}_{timestamp}";
             }
         }
 
@@ -369,35 +408,49 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Retourne la liste des endpoints à synchroniser
         /// </summary>
+        // <summary>
+        /// Retourne la liste des endpoints à synchroniser - MODIFIÉ avec PackingSlip
+        /// </summary>
         private List<EndpointConfig> GetConfiguredEndpoints()
         {
             return new List<EndpointConfig>
-            {
-                new()
-                {
-                    Name = "Articles",
-                    Path = "data/BRINT34ReleasedProducts",
-                    PrimaryKeyField = "ItemId"
-                },
-                new()
-                {
-                    Name = "ReturnOrders",
-                    Path = "data/BRINT32ReturnOrderTables",
-                    PrimaryKeyField = "ReturnOrderNumber"
-                },
-                new()
-                {
-                    Name = "PurchaseOrders",
-                    Path = "data/BRINT32PurchOrderTables",
-                    PrimaryKeyField = "PurchaseOrderNumber"
-                },
-                new()
-                {
-                    Name = "TransferOrders",
-                    Path = "data/BRINT32TransferOrderTables",
-                    PrimaryKeyField = "TransferId"
-                }
-            };
+    {
+        new()
+        {
+            Name = "Articles",
+            Path = "data/BRINT34ReleasedProducts",
+            PrimaryKeyField = "ItemId",
+            DisplayName = "Articles"
+        },
+        new()
+        {
+            Name = "ReturnOrders",
+            Path = "data/BRINT32ReturnOrderTables",
+            PrimaryKeyField = "ReturnItemNum",
+            DisplayName = "Commandes de Retour"
+        },
+        new()
+        {
+            Name = "PurchaseOrders",
+            Path = "data/BRINT32PurchOrderTables",
+            PrimaryKeyField = "PurchId",
+            DisplayName = "Commandes d'Achat"
+        },
+        new()
+        {
+            Name = "TransferOrders",
+            Path = "data/BRINT32TransferOrderTables",
+            PrimaryKeyField = "TransferId",
+            DisplayName = "Ordres de Transfert"
+        },
+        new()
+        {
+            Name = "SalesOrders",
+            Path = "data/BRPackingSlipInterfaces",
+            PrimaryKeyField = "WMSTRansRecId",
+            DisplayName = "Commandes de Ventes"
+        }
+    };
         }
 
         /// <summary>
@@ -491,7 +544,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Extrait l'ID de commande selon le type d'endpoint
+        /// Extrait l'ID de commande selon le type d'endpoint - MODIFIÉ avec PackingSlip
         /// </summary>
         private string ExtractOrderId(JsonElement item, string endpointName)
         {
@@ -508,6 +561,10 @@ namespace DynamicsApiToDatabase.Services
                     "TRANSFERORDERS" or "BRINT32TRANSFERORDERTABLES" =>
                         item.TryGetProperty("TransferId", out var transferId) ? transferId.GetString() ?? "" : "",
 
+                    // ✅ NOUVEAU : Commandes de ventes PackingSlip
+                    "SALESORDERS" or "BRPACKINGSLIPINTERFACES" =>
+                        item.TryGetProperty("transRefId", out var salesId) ? salesId.GetString() ?? "" : "",
+
                     _ => ""
                 };
             }
@@ -519,7 +576,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Confirme les commandes selon leur type
+        /// Confirme les commandes selon leur type - MODIFIÉ avec PackingSlip
         /// </summary>
         private async Task ConfirmOrdersByTypeAsync(string token, string endpointName, List<string> orderIds)
         {
@@ -547,6 +604,14 @@ namespace DynamicsApiToDatabase.Services
                         confirmedCount = await _statusConfirmationService.ConfirmMultipleTransferOrdersWithStatusAsync(token, orderIds);
                         break;
 
+                    // ✅ NOUVEAU : Commandes de ventes PackingSlip
+                    case "SALESORDERS":
+                    case "BRPACKINGSLIPINTERFACES":
+                        _logger.LogInformation($"📤 Confirmation de {orderIds.Count} Sales Orders...");
+                        // NOTE: La méthode sera ajoutée une fois la méthode de confirmation clarifiée
+                        confirmedCount = await _statusConfirmationService.ConfirmMultipleSalesOrdersWithStatusAsync(token, orderIds);
+                        break;
+
                     default:
                         _logger.LogWarning($"⚠️ Type de commande non reconnu pour confirmation: {endpointName}");
                         break;
@@ -564,39 +629,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Synchronise tous les endpoints avec confirmations automatiques
-        /// </summary>
-        public async Task<List<SyncResult>> SyncAllEndpointsWithOrderConfirmationsAsync()
-        {
-            var endpoints = GetConfiguredEndpoints();
-            var results = new List<SyncResult>();
-
-            _logger.LogInformation($"🚀 Début synchronisation de {endpoints.Count} endpoints avec confirmations");
-
-            foreach (var endpoint in endpoints)
-            {
-                SyncResult result;
-
-                // Utiliser la méthode avec confirmations pour les commandes
-                if (endpoint.Name.ToUpper().Contains("ORDER"))
-                {
-                    result = await SyncEndpointWithOrderConfirmationAsync(endpoint.Name, endpoint.Path, endpoint.PrimaryKeyField);
-                }
-                else
-                {
-                    // Utiliser la méthode standard pour les articles
-                    result = await SyncEndpointAsync(endpoint.Name, endpoint.Path, endpoint.PrimaryKeyField);
-                }
-
-                results.Add(result);
-                await Task.Delay(1000); // Pause entre les endpoints
-            }
-
-            return results;
-        }
-
-        /// <summary>
-        /// Confirme toutes les commandes actives d'un type spécifique
+        /// Confirme toutes les commandes actives d'un type spécifique - MODIFIÉ avec PackingSlip
         /// </summary>
         public async Task<int> ConfirmAllActiveOrdersOfTypeAsync(string orderType)
         {
@@ -639,6 +672,16 @@ namespace DynamicsApiToDatabase.Services
                         }
                         break;
 
+                    // ✅ NOUVEAU : Commandes de ventes
+                    case "SALES":
+                        var salesOrders = await _databaseService.GetActiveSalesOrderIdsAsync();
+                        if (salesOrders.Count > 0)
+                        {
+                            _logger.LogInformation($"📤 Confirmation de {salesOrders.Count} Sales Orders actives...");
+                            confirmedCount = await _statusConfirmationService.ConfirmMultipleSalesOrdersWithStatusAsync(token, salesOrders);
+                        }
+                        break;
+
                     default:
                         _logger.LogWarning($"⚠️ Type de commande non reconnu: {orderType}");
                         break;
@@ -655,7 +698,39 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Confirme toutes les commandes actives (tous types)
+        /// Synchronise tous les endpoints avec confirmations automatiques
+        /// </summary>
+        public async Task<List<SyncResult>> SyncAllEndpointsWithOrderConfirmationsAsync()
+        {
+            var endpoints = GetConfiguredEndpoints();
+            var results = new List<SyncResult>();
+
+            _logger.LogInformation($"🚀 Début synchronisation de {endpoints.Count} endpoints avec confirmations");
+
+            foreach (var endpoint in endpoints)
+            {
+                SyncResult result;
+
+                // Utiliser la méthode avec confirmations pour les commandes
+                if (endpoint.Name.ToUpper().Contains("ORDER"))
+                {
+                    result = await SyncEndpointWithOrderConfirmationAsync(endpoint.Name, endpoint.Path, endpoint.PrimaryKeyField);
+                }
+                else
+                {
+                    // Utiliser la méthode standard pour les articles
+                    result = await SyncEndpointAsync(endpoint.Name, endpoint.Path, endpoint.PrimaryKeyField);
+                }
+
+                results.Add(result);
+                await Task.Delay(1000); // Pause entre les endpoints
+            }
+
+            return results;
+        }
+
+        // <summary>
+        /// Confirme toutes les commandes actives (tous types) - MODIFIÉ avec PackingSlip
         /// </summary>
         public async Task<Dictionary<string, int>> ConfirmAllActiveOrdersAsync()
         {
@@ -681,8 +756,15 @@ namespace DynamicsApiToDatabase.Services
                 var transferCount = await ConfirmAllActiveOrdersOfTypeAsync("TRANSFER");
                 results["Transfer"] = transferCount;
 
-                var totalConfirmed = purchaseCount + returnCount + transferCount;
-                _logger.LogInformation($"🎯 Confirmation terminée: {totalConfirmed} commandes au total (Purchase: {purchaseCount}, Return: {returnCount}, Transfer: {transferCount})");
+                await Task.Delay(2000); // Pause entre les types
+
+                // ✅ NOUVEAU : Confirmer les Sales Orders
+                var salesCount = await ConfirmAllActiveOrdersOfTypeAsync("SALES");
+                results["Sales"] = salesCount;
+
+                var totalConfirmed = purchaseCount + returnCount + transferCount + salesCount;
+                _logger.LogInformation($"🎯 Confirmation terminée: {totalConfirmed} commandes au total " +
+                    $"(Purchase: {purchaseCount}, Return: {returnCount}, Transfer: {transferCount}, Sales: {salesCount})");
 
                 return results;
             }
@@ -692,14 +774,15 @@ namespace DynamicsApiToDatabase.Services
                 return results;
             }
         }
+
+        /// <summary>
+        /// Résultat du traitement d'un enregistrement
+        /// </summary>
+        public class ProcessResult
+        {
+            public bool Success { get; set; }
+            public string? ErrorMessage { get; set; }
+        }
     }
 
-    /// <summary>
-    /// Résultat du traitement d'un enregistrement
-    /// </summary>
-    public class ProcessResult
-    {
-        public bool Success { get; set; }
-        public string? ErrorMessage { get; set; }
-    }
 }

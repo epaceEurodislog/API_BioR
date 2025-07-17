@@ -206,6 +206,8 @@ namespace DynamicsApiToDatabase
             }
         }
 
+        
+
         private static IServiceCollection ConfigureServices()
         {
             var services = new ServiceCollection();

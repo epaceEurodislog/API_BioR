@@ -535,6 +535,212 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+        /// Récupère les lignes d'une Sales Order depuis JSON_IN
+        /// </summary>
+        /// <summary>
+        /// Récupère les lignes d'une Sales Order depuis JSON_IN - VERSION CORRIGÉE
+        /// </summary>
+        public async Task<List<OrderLineInfo>> GetSalesOrderLinesAsync(string salesOrderId)
+        {
+            var orderLines = new List<OrderLineInfo>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT 
+                JSON_DATA,
+                JSON_VALUE(JSON_DATA, '$.transRefId') as SalesOrderId,
+                JSON_VALUE(JSON_DATA, '$.BRPortalOrderNumber') as PortalOrderNumber,
+                JSON_VALUE(JSON_DATA, '$.itemId') as ItemId,
+                JSON_VALUE(JSON_DATA, '$.WMSTRansRecId') as LineRecId,
+                JSON_VALUE(JSON_DATA, '$.qty') as Quantity,
+                JSON_VALUE(JSON_DATA, '$.INT3PLStatus') as Status
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRPackingSlipInterfaces'
+            AND JSON_VALUE(JSON_DATA, '$.transRefId') = @SalesOrderId
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            ORDER BY CAST(JSON_VALUE(JSON_DATA, '$.WMSTRansRecId') AS BIGINT)";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@SalesOrderId", salesOrderId);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var itemId = reader.IsDBNull("ItemId") ? "" : reader.GetString("ItemId");
+                    var lineRecIdStr = reader.IsDBNull("LineRecId") ? "0" : reader.GetString("LineRecId");
+                    var quantityStr = reader.IsDBNull("Quantity") ? "0" : reader.GetString("Quantity");
+                    var status = reader.IsDBNull("Status") ? "" : reader.GetString("Status");
+
+                    if (!string.IsNullOrEmpty(itemId))
+                    {
+                        orderLines.Add(new OrderLineInfo
+                        {
+                            OrderId = salesOrderId,
+                            ItemId = itemId,
+                            LineNumber = int.TryParse(lineRecIdStr, out var lineNum) ? lineNum : 0, // ✅ CORRIGÉ : Stocker WMSTRansRecId dans LineNumber
+                            Quantity = decimal.TryParse(quantityStr, out var qty) ? qty : 0,
+                            OrderType = "Sales",
+                            Status = status,
+                            CreatedDate = DateTime.Now,
+                            LastUpdated = DateTime.Now
+                        });
+                    }
+                }
+
+                _logger.LogInformation($"📊 {orderLines.Count} lignes récupérées pour Sales Order {salesOrderId}");
+                return orderLines;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Sales Order {salesOrderId}");
+                return orderLines;
+            }
+        }
+
+        /// <summary>
+        /// Récupère tous les IDs des Sales Orders actives
+        /// </summary>
+        public async Task<List<string>> GetActiveSalesOrderIdsAsync()
+        {
+            var orderIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.transRefId') as SalesOrderId
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRPackingSlipInterfaces'
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            AND JSON_VALUE(JSON_DATA, '$.transRefId') IS NOT NULL
+            AND JSON_VALUE(JSON_DATA, '$.transType') = 'Sales'
+            ORDER BY JSON_VALUE(JSON_DATA, '$.transRefId')";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var salesOrderId = reader.GetString("SalesOrderId");
+                    if (!string.IsNullOrEmpty(salesOrderId))
+                    {
+                        orderIds.Add(salesOrderId);
+                    }
+                }
+
+                _logger.LogInformation($"📊 {orderIds.Count} Sales Orders actives trouvées");
+                return orderIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur récupération Sales Orders actives");
+                return orderIds;
+            }
+        }
+
+        /// <summary>
+        /// Récupère les Sales Orders par statut INT3PL
+        /// </summary>
+        public async Task<List<string>> GetSalesOrderIdsByStatusAsync(string int3plStatus)
+        {
+            var orderIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.transRefId') as SalesOrderId
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRPackingSlipInterfaces'
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            AND JSON_VALUE(JSON_DATA, '$.transRefId') IS NOT NULL
+            AND JSON_VALUE(JSON_DATA, '$.transType') = 'Sales'
+            AND JSON_VALUE(JSON_DATA, '$.INT3PLStatus') = @Status
+            ORDER BY JSON_VALUE(JSON_DATA, '$.transRefId')";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@Status", int3plStatus);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var salesOrderId = reader.GetString("SalesOrderId");
+                    if (!string.IsNullOrEmpty(salesOrderId))
+                    {
+                        orderIds.Add(salesOrderId);
+                    }
+                }
+
+                _logger.LogInformation($"📊 {orderIds.Count} Sales Orders trouvées avec statut '{int3plStatus}'");
+                return orderIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération Sales Orders par statut '{int3plStatus}'");
+                return orderIds;
+            }
+        }
+
+        /// <summary>
+        /// Récupère des statistiques sur les Sales Orders
+        /// </summary>
+        public async Task<SalesOrderStatistics> GetSalesOrderStatisticsAsync()
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT 
+                COUNT(DISTINCT JSON_VALUE(JSON_DATA, '$.transRefId')) as TotalOrders,
+                COUNT(*) as TotalLines,
+                COUNT(CASE WHEN JSON_VALUE(JSON_DATA, '$.INT3PLStatus') = 'None' THEN 1 END) as PendingLines,
+                COUNT(CASE WHEN JSON_VALUE(JSON_DATA, '$.INT3PLStatus') = 'Processed' THEN 1 END) as ProcessedLines,
+                COUNT(CASE WHEN JSON_VALUE(JSON_DATA, '$.expeditionStatus') = 'Activated' THEN 1 END) as ActivatedLines,
+                COUNT(CASE WHEN JSON_CRDA >= DATEADD(day, -1, GETDATE()) THEN 1 END) as CreatedLast24h,
+                AVG(CAST(JSON_VALUE(JSON_DATA, '$.qty') AS DECIMAL)) as AverageQuantity
+            FROM JSON_IN
+            WHERE JSON_FROM = 'data/BRPackingSlipInterfaces'
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                if (await reader.ReadAsync())
+                {
+                    return new SalesOrderStatistics
+                    {
+                        TotalOrders = reader.GetInt32("TotalOrders"),
+                        TotalLines = reader.GetInt32("TotalLines"),
+                        PendingLines = reader.GetInt32("PendingLines"),
+                        ProcessedLines = reader.GetInt32("ProcessedLines"),
+                        ActivatedLines = reader.GetInt32("ActivatedLines"),
+                        CreatedLast24h = reader.GetInt32("CreatedLast24h"),
+                        AverageQuantity = reader.IsDBNull("AverageQuantity") ? 0 : reader.GetDecimal("AverageQuantity")
+                    };
+                }
+
+                return new SalesOrderStatistics();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur lors de la récupération des statistiques Sales Orders");
+                return new SalesOrderStatistics();
+            }
+        }
+
+        /// <summary>
         /// Statistiques des confirmations pour monitoring
         /// </summary>
         public async Task<ConfirmationStatistics> GetConfirmationStatisticsAsync()
@@ -921,6 +1127,46 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+        /// Récupère le transRefId d'une Sales Order à partir du BRPortalOrderNumber
+        /// </summary>
+        public async Task<string> GetSalesOrderIdByPortalNumberAsync(string portalOrderNumber)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.transRefId') as SalesOrderId
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRPackingSlipInterfaces'
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            AND JSON_VALUE(JSON_DATA, '$.BRPortalOrderNumber') = @PortalOrderNumber
+            AND JSON_VALUE(JSON_DATA, '$.transRefId') IS NOT NULL";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@PortalOrderNumber", portalOrderNumber);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                if (await reader.ReadAsync())
+                {
+                    var salesOrderId = reader.GetString("SalesOrderId");
+                    _logger.LogInformation($"📊 Sales Order {salesOrderId} trouvée pour portail {portalOrderNumber}");
+                    return salesOrderId;
+                }
+
+                _logger.LogWarning($"⚠️ Aucune Sales Order trouvée pour le numéro portail {portalOrderNumber}");
+                return "";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération Sales Order pour portail {portalOrderNumber}");
+                return "";
+            }
+        }
+
+        /// <summary>
         /// Calcule un hash MD5 du contenu JSON
         /// </summary>
         private static string ComputeHash(string input)
@@ -932,22 +1178,47 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Classe pour représenter une ligne de commande avec informations détaillées
+        /// Statistiques des Sales Orders
         /// </summary>
-        public class OrderLineInfo
+        public class SalesOrderStatistics
         {
-            public string OrderId { get; set; } = "";
-            public string ItemId { get; set; } = "";
-            public int LineNumber { get; set; }
-            public decimal Quantity { get; set; }
-            public string OrderType { get; set; } = "";
-            public string Status { get; set; } = "";
-            public DateTime CreatedDate { get; set; }
-            public DateTime LastUpdated { get; set; }
+            public int TotalOrders { get; set; }
+            public int TotalLines { get; set; }
+            public int PendingLines { get; set; }
+            public int ProcessedLines { get; set; }
+            public int ActivatedLines { get; set; }
+            public int CreatedLast24h { get; set; }
+            public decimal AverageQuantity { get; set; }
 
-            public string GetDisplayName()
+            public double ProcessingRate => TotalLines > 0 ? (double)ProcessedLines / TotalLines * 100 : 0;
+            public double ActivationRate => TotalLines > 0 ? (double)ActivatedLines / TotalLines * 100 : 0;
+
+            public string GetSummary()
             {
-                return $"{OrderType} {OrderId} - Line {LineNumber} - Item {ItemId} (Qty: {Quantity})";
+                return $"Commandes: {TotalOrders:N0}, Lignes: {TotalLines:N0}, " +
+                       $"Traitées: {ProcessedLines:N0} ({ProcessingRate:F1}%), " +
+                       $"Activées: {ActivatedLines:N0} ({ActivationRate:F1}%), " +
+                       $"Créées 24h: {CreatedLast24h:N0}";
+            }
+
+            /// <summary>
+            /// Classe pour représenter une ligne de commande avec informations détaillées
+            /// </summary>
+            public class OrderLineInfo
+            {
+                public string OrderId { get; set; } = "";
+                public string ItemId { get; set; } = "";
+                public int LineNumber { get; set; }
+                public decimal Quantity { get; set; }
+                public string OrderType { get; set; } = "";
+                public string Status { get; set; } = "";
+                public DateTime CreatedDate { get; set; }
+                public DateTime LastUpdated { get; set; }
+
+                public string GetDisplayName()
+                {
+                    return $"{OrderType} {OrderId} - Line {LineNumber} - Item {ItemId} (Qty: {Quantity})";
+                }
             }
         }
     }

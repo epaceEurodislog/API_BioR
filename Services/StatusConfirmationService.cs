@@ -516,13 +516,13 @@ namespace DynamicsApiToDatabase.Services
         // ==========================================
 
         /// <summary>
-        /// Met à jour INT3PLStatus pour les lignes d'une Purchase Order
+        /// Met à jour INT3PLStatus pour les lignes d'une Purchase Order - SEULEMENT LA LIGNE 1
         /// </summary>
         private async Task UpdatePurchaseOrderLinesInt3PLStatusAsync(string token, string purchId, string int3plStatus)
         {
             try
             {
-                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Purchase Order {purchId}");
+                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Purchase Order {purchId} (ligne 1 seulement)");
 
                 var orderLines = await GetPurchaseOrderLinesAsync(purchId);
 
@@ -532,15 +532,27 @@ namespace DynamicsApiToDatabase.Services
                     return;
                 }
 
-                foreach (var line in orderLines)
+                // ✅ CORRECTION: Mettre à jour SEULEMENT la ligne 1
+                var firstLine = orderLines.Where(l => l.LineNumber == 1).FirstOrDefault();
+
+                if (firstLine != null && !string.IsNullOrEmpty(firstLine.ItemId))
                 {
-                    if (!string.IsNullOrEmpty(line.ItemId))
-                    {
-                        await UpdateItemInt3PLStatusAsync(token, line.ItemId, int3plStatus);
-                    }
+                    _logger.LogInformation($"📤 Mise à jour INT3PLStatus ligne 1: {firstLine.ItemId}");
+                    await UpdateItemInt3PLStatusAsync(token, firstLine.ItemId, int3plStatus);
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Ligne 1 non trouvée pour Purchase Order {purchId}");
                 }
 
-                _logger.LogInformation($"✅ INT3PLStatus mis à jour pour {orderLines.Count} lignes de Purchase Order {purchId}");
+                // ✅ INFORMATION: Logger les autres lignes mais ne pas les traiter
+                if (orderLines.Count > 1)
+                {
+                    var otherLines = orderLines.Where(l => l.LineNumber > 1).ToList();
+                    _logger.LogInformation($"ℹ️ Purchase Order {purchId} a {otherLines.Count} autres lignes (non traitées): {string.Join(", ", otherLines.Select(l => $"L{l.LineNumber}:{l.ItemId}"))}");
+                }
+
+                _logger.LogInformation($"✅ INT3PLStatus traité pour Purchase Order {purchId} (ligne 1 uniquement)");
             }
             catch (Exception ex)
             {
@@ -549,13 +561,297 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Met à jour INT3PLStatus pour les lignes d'une Return Order
+        /// Confirme une Sales Order et met à jour INT3PLStatus
+        /// NOTE: Endpoint à mettre à jour selon les spécifications client
+        /// </summary>
+        /// <summary>
+        /// Confirme une Sales Order et met à jour INT3PLStatus - VERSION CORRIGÉE avec PATCH
+        /// </summary>
+        public async Task<bool> ConfirmSalesOrderWithStatusUpdateAsync(string token, string salesOrderId, string int3plStatus = "ProcessedBy3PL")
+        {
+            try
+            {
+                _logger.LogInformation($"📤 Confirmation Sales Order avec INT3PLStatus: {salesOrderId}");
+
+                // ✅ CORRIGÉ : Récupérer d'abord les lignes de la Sales Order pour obtenir les WMSTRansRecId
+                var orderLines = await GetSalesOrderLinesAsync(salesOrderId);
+
+                if (orderLines.Count == 0)
+                {
+                    _logger.LogWarning($"⚠️ Aucune ligne trouvée pour Sales Order {salesOrderId}");
+                    return false;
+                }
+
+                var successCount = 0;
+
+                // ✅ NOUVELLE APPROCHE : Mettre à jour chaque ligne individuellement avec PATCH
+                foreach (var line in orderLines)
+                {
+                    var success = await UpdateSalesOrderLineStatusAsync(token, line.WMSTRansRecId, int3plStatus);
+                    if (success)
+                    {
+                        successCount++;
+                    }
+                }
+
+                var successRate = orderLines.Count > 0 ? (double)successCount / orderLines.Count * 100 : 0;
+                _logger.LogInformation($"✅ Sales Order {salesOrderId}: {successCount}/{orderLines.Count} lignes mises à jour ({successRate:F1}%)");
+
+                return successCount > 0; // Succès si au moins une ligne a été mise à jour
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception Sales Order {salesOrderId}");
+                await _jsonOutService.LogErrorAsync($"SALES_STATUS_{salesOrderId}", "", ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Met à jour le statut INT3PL d'une ligne de Sales Order spécifique
+        /// </summary>
+        private async Task<bool> UpdateSalesOrderLineStatusAsync(string token, long wmsTransRecId, string int3plStatus)
+        {
+            try
+            {
+                // ✅ URL CORRIGÉE selon votre exemple Postman
+                var endpoint = $"{_baseUrl}/data/BRPackingSlipInterfaces(WMSTRansRecId={wmsTransRecId},dataAreaId='br')";
+
+                var payload = new
+                {
+                    INT3PLStatus = int3plStatus // ✅ Utiliser "ProcessedBy3PL" comme dans Postman
+                };
+
+                var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = null
+                });
+
+                await _jsonOutService.LogJsonSentAsync($"SALES_LINE_{wmsTransRecId}", jsonPayload, endpoint);
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                // ✅ UTILISER PATCH comme dans votre exemple Postman
+                var response = await _httpClient.PatchAsync(endpoint, content);
+                var responseContent = await response.Content.ReadAsStringAsync();
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug($"✅ Ligne Sales Order {wmsTransRecId} mise à jour: {int3plStatus}");
+                    await _jsonOutService.LogSuccessAsync($"SALES_LINE_{wmsTransRecId}", responseContent);
+                    return true;
+                }
+                else
+                {
+                    var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
+                    _logger.LogWarning($"⚠️ Erreur ligne Sales Order {wmsTransRecId}: {errorMessage}");
+                    await _jsonOutService.LogErrorAsync($"SALES_LINE_{wmsTransRecId}", jsonPayload, errorMessage, (int)response.StatusCode);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception ligne Sales Order {wmsTransRecId}");
+                await _jsonOutService.LogErrorAsync($"SALES_LINE_{wmsTransRecId}", "", ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Confirme plusieurs Sales Orders avec mise à jour INT3PLStatus
+        /// </summary>
+        public async Task<int> ConfirmMultipleSalesOrdersWithStatusAsync(string token, List<string> salesOrderIds, string int3plStatus = "Processed")
+        {
+            var successCount = 0;
+            var totalCount = salesOrderIds.Count;
+
+            _logger.LogInformation($"📤 Début confirmation de {totalCount} Sales Orders avec INT3PLStatus...");
+
+            for (int i = 0; i < salesOrderIds.Count; i++)
+            {
+                var salesOrderId = salesOrderIds[i];
+
+                try
+                {
+                    var success = await ConfirmSalesOrderWithStatusUpdateAsync(token, salesOrderId, int3plStatus);
+
+                    if (success)
+                    {
+                        successCount++;
+                    }
+
+                    if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                    {
+                        _logger.LogInformation($"📊 Progrès Sales Orders: {i + 1}/{totalCount} traitées ({successCount} confirmées)");
+                    }
+
+                    await Task.Delay(300); // Pause pour ne pas surcharger l'API
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"❌ Erreur lors de la confirmation Sales Order {salesOrderId}");
+                }
+            }
+
+            var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
+            _logger.LogInformation($"✅ Sales Orders confirmées: {successCount}/{totalCount} ({successRate:F1}% succès)");
+
+            return successCount;
+        }
+
+        /// <summary>
+        /// Met à jour INT3PLStatus pour les lignes d'une Sales Order
+        /// </summary>
+        private async Task UpdateSalesOrderLinesInt3PLStatusAsync(string token, string salesOrderId, string int3plStatus)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Sales Order {salesOrderId}");
+
+                var orderLines = await GetSalesOrderLinesAsync(salesOrderId);
+
+                if (orderLines.Count == 0)
+                {
+                    _logger.LogWarning($"⚠️ Aucune ligne trouvée pour Sales Order {salesOrderId}");
+                    return;
+                }
+
+                foreach (var line in orderLines)
+                {
+                    if (!string.IsNullOrEmpty(line.ItemId))
+                    {
+                        await UpdateItemInt3PLStatusAsync(token, line.ItemId, int3plStatus);
+                    }
+                }
+
+                _logger.LogInformation($"✅ INT3PLStatus mis à jour pour {orderLines.Count} lignes de Sales Order {salesOrderId}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur mise à jour INT3PLStatus Sales Order {salesOrderId}");
+            }
+        }
+
+        /// <summary>
+        /// Récupère les lignes d'une Sales Order depuis la base de données - VERSION CORRIGÉE
+        /// </summary>
+        private async Task<List<SalesOrderLine>> GetSalesOrderLinesAsync(string salesOrderId)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+                var orderLines = await sqlServerService.GetSalesOrderLinesAsync(salesOrderId);
+
+                return orderLines.Select(line => new SalesOrderLine
+                {
+                    ItemId = line.ItemId,
+                    OrderId = line.OrderId,
+                    LineNumber = line.LineNumber,
+                    Quantity = line.Quantity,
+                    Status = line.Status,
+                    WMSTRansRecId = line.LineNumber // Utiliser LineNumber comme WMSTRansRecId
+                }).ToList();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Sales Order {salesOrderId}");
+                return new List<SalesOrderLine>();
+            }
+        }
+
+        /// <summary>
+        /// Confirme une Sales Order par numéro de portail
+        /// </summary>
+        public async Task<bool> ConfirmSalesOrderByPortalNumberAsync(string token, string portalOrderNumber, string int3plStatus = "Processed")
+        {
+            try
+            {
+                _logger.LogInformation($"📤 Confirmation Sales Order par portail: {portalOrderNumber}");
+
+                // D'abord, trouver le transRefId à partir du BRPortalOrderNumber
+                var salesOrderId = await GetSalesOrderIdByPortalNumberAsync(portalOrderNumber);
+
+                if (string.IsNullOrEmpty(salesOrderId))
+                {
+                    _logger.LogError($"❌ Aucune Sales Order trouvée pour le numéro portail {portalOrderNumber}");
+                    return false;
+                }
+
+                // Confirmer la Sales Order trouvée
+                return await ConfirmSalesOrderWithStatusUpdateAsync(token, salesOrderId, int3plStatus);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception Sales Order portail {portalOrderNumber}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Confirme les Sales Orders par statut
+        /// </summary>
+        public async Task<int> ConfirmSalesOrdersByStatusAsync(string token, string currentStatus, string newStatus)
+        {
+            try
+            {
+                _logger.LogInformation($"📤 Confirmation Sales Orders avec statut '{currentStatus}' -> '{newStatus}'");
+
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+
+                var salesOrderIds = await sqlServerService.GetSalesOrderIdsByStatusAsync(currentStatus);
+
+                if (salesOrderIds.Count == 0)
+                {
+                    _logger.LogInformation($"Aucune Sales Order trouvée avec le statut '{currentStatus}'");
+                    return 0;
+                }
+
+                return await ConfirmMultipleSalesOrdersWithStatusAsync(token, salesOrderIds, newStatus);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur confirmation Sales Orders par statut '{currentStatus}'");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Récupère le transRefId d'une Sales Order à partir du BRPortalOrderNumber
+        /// </summary>
+        private async Task<string> GetSalesOrderIdByPortalNumberAsync(string portalOrderNumber)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+
+                // Cette méthode devra être ajoutée au SqlServerDatabaseService
+                return await sqlServerService.GetSalesOrderIdByPortalNumberAsync(portalOrderNumber);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération Sales Order ID pour portail {portalOrderNumber}");
+                return "";
+            }
+        }
+
+        /// <summary>
+        /// Met à jour INT3PLStatus pour les lignes d'une Return Order - SEULEMENT LA LIGNE 1
         /// </summary>
         private async Task UpdateReturnOrderLinesInt3PLStatusAsync(string token, string returnId, string int3plStatus)
         {
             try
             {
-                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Return Order {returnId}");
+                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Return Order {returnId} (ligne 1 seulement)");
 
                 var orderLines = await GetReturnOrderLinesAsync(returnId);
 
@@ -565,15 +861,27 @@ namespace DynamicsApiToDatabase.Services
                     return;
                 }
 
-                foreach (var line in orderLines)
+                // ✅ CORRECTION: Mettre à jour SEULEMENT la ligne 1
+                var firstLine = orderLines.Where(l => l.LineNumber == 1).FirstOrDefault();
+
+                if (firstLine != null && !string.IsNullOrEmpty(firstLine.ItemId))
                 {
-                    if (!string.IsNullOrEmpty(line.ItemId))
-                    {
-                        await UpdateItemInt3PLStatusAsync(token, line.ItemId, int3plStatus);
-                    }
+                    _logger.LogInformation($"📤 Mise à jour INT3PLStatus ligne 1: {firstLine.ItemId}");
+                    await UpdateItemInt3PLStatusAsync(token, firstLine.ItemId, int3plStatus);
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Ligne 1 non trouvée pour Return Order {returnId}");
                 }
 
-                _logger.LogInformation($"✅ INT3PLStatus mis à jour pour {orderLines.Count} lignes de Return Order {returnId}");
+                // ✅ INFORMATION: Logger les autres lignes mais ne pas les traiter
+                if (orderLines.Count > 1)
+                {
+                    var otherLines = orderLines.Where(l => l.LineNumber > 1).ToList();
+                    _logger.LogInformation($"ℹ️ Return Order {returnId} a {otherLines.Count} autres lignes (non traitées): {string.Join(", ", otherLines.Select(l => $"L{l.LineNumber}:{l.ItemId}"))}");
+                }
+
+                _logger.LogInformation($"✅ INT3PLStatus traité pour Return Order {returnId} (ligne 1 uniquement)");
             }
             catch (Exception ex)
             {
@@ -582,13 +890,13 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Met à jour INT3PLStatus pour les lignes d'une Transfer Order
+        /// Met à jour INT3PLStatus pour les lignes d'une Transfer Order - SEULEMENT LA LIGNE 1
         /// </summary>
         private async Task UpdateTransferOrderLinesInt3PLStatusAsync(string token, string transferId, string int3plStatus)
         {
             try
             {
-                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Transfer Order {transferId}");
+                _logger.LogInformation($"🔄 Mise à jour INT3PLStatus pour Transfer Order {transferId} (ligne 1 seulement)");
 
                 var orderLines = await GetTransferOrderLinesAsync(transferId);
 
@@ -598,15 +906,27 @@ namespace DynamicsApiToDatabase.Services
                     return;
                 }
 
-                foreach (var line in orderLines)
+                // ✅ CORRECTION: Mettre à jour SEULEMENT la ligne 1
+                var firstLine = orderLines.Where(l => l.LineNumber == 1).FirstOrDefault();
+
+                if (firstLine != null && !string.IsNullOrEmpty(firstLine.ItemId))
                 {
-                    if (!string.IsNullOrEmpty(line.ItemId))
-                    {
-                        await UpdateItemInt3PLStatusAsync(token, line.ItemId, int3plStatus);
-                    }
+                    _logger.LogInformation($"📤 Mise à jour INT3PLStatus ligne 1: {firstLine.ItemId}");
+                    await UpdateItemInt3PLStatusAsync(token, firstLine.ItemId, int3plStatus);
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Ligne 1 non trouvée pour Transfer Order {transferId}");
                 }
 
-                _logger.LogInformation($"✅ INT3PLStatus mis à jour pour {orderLines.Count} lignes de Transfer Order {transferId}");
+                // ✅ INFORMATION: Logger les autres lignes mais ne pas les traiter
+                if (orderLines.Count > 1)
+                {
+                    var otherLines = orderLines.Where(l => l.LineNumber > 1).ToList();
+                    _logger.LogInformation($"ℹ️ Transfer Order {transferId} a {otherLines.Count} autres lignes (non traitées): {string.Join(", ", otherLines.Select(l => $"L{l.LineNumber}:{l.ItemId}"))}");
+                }
+
+                _logger.LogInformation($"✅ INT3PLStatus traité pour Transfer Order {transferId} (ligne 1 uniquement)");
             }
             catch (Exception ex)
             {
@@ -621,7 +941,36 @@ namespace DynamicsApiToDatabase.Services
         {
             try
             {
-                var endpoint = $"{_baseUrl}/data/BRINT34ReleasedProducts(dataAreaId='BR',ItemId='{itemId}')";
+                // 🔧 MÉTHODE 1: Essayer d'abord avec l'endpoint standard
+                var endpoint = $"{_baseUrl}/data/BRINT34ReleasedProducts";
+
+                // Rechercher l'article d'abord
+                var searchEndpoint = $"{endpoint}?$filter=ItemId eq '{itemId}' and dataAreaId eq 'BR'";
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var searchResponse = await _httpClient.GetAsync(searchEndpoint);
+
+                if (!searchResponse.IsSuccessStatusCode)
+                {
+                    _logger.LogWarning($"⚠️ Article {itemId} non trouvé dans l'API pour mise à jour INT3PLStatus");
+                    return;
+                }
+
+                var searchContent = await searchResponse.Content.ReadAsStringAsync();
+                var searchDoc = JsonDocument.Parse(searchContent);
+
+                if (!searchDoc.RootElement.TryGetProperty("value", out var valueArray) ||
+                    valueArray.GetArrayLength() == 0)
+                {
+                    _logger.LogWarning($"⚠️ Article {itemId} non trouvé dans les résultats de recherche");
+                    return;
+                }
+
+                // 🔧 MÉTHODE 2: Utiliser l'endpoint de mise à jour spécifique
+                var updateEndpoint = $"{_baseUrl}/data/BRINT34ReleasedProducts(dataAreaId='BR',ItemId='{itemId}')";
 
                 var payload = new
                 {
@@ -629,26 +978,55 @@ namespace DynamicsApiToDatabase.Services
                 };
 
                 var jsonPayload = JsonSerializer.Serialize(payload);
-
-                _httpClient.DefaultRequestHeaders.Clear();
-                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
-                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
-
                 var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
 
-                var response = await _httpClient.PatchAsync(endpoint, content);
+                // Essayer PATCH d'abord
+                var patchResponse = await _httpClient.PatchAsync(updateEndpoint, content);
 
-                if (response.IsSuccessStatusCode)
+                if (patchResponse.IsSuccessStatusCode)
                 {
                     _logger.LogDebug($"✅ INT3PLStatus mis à jour pour l'article {itemId}: {int3plStatus}");
                     await _jsonOutService.LogSuccessAsync($"INT3PL_{itemId}", $"INT3PLStatus updated to {int3plStatus}");
+                    return;
                 }
-                else
+
+                // 🔧 MÉTHODE 3: Si PATCH échoue, essayer avec PUT
+                content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                var putResponse = await _httpClient.PutAsync(updateEndpoint, content);
+
+                if (putResponse.IsSuccessStatusCode)
                 {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogWarning($"⚠️ Erreur mise à jour INT3PLStatus pour {itemId}: {response.StatusCode} - {errorContent}");
-                    await _jsonOutService.LogErrorAsync($"INT3PL_{itemId}", jsonPayload, errorContent, (int)response.StatusCode);
+                    _logger.LogDebug($"✅ INT3PLStatus mis à jour (PUT) pour l'article {itemId}: {int3plStatus}");
+                    await _jsonOutService.LogSuccessAsync($"INT3PL_{itemId}", $"INT3PLStatus updated to {int3plStatus} via PUT");
+                    return;
                 }
+
+                // 🔧 MÉTHODE 4: Utiliser l'endpoint de changement de statut
+                var statusChangeEndpoint = $"{_baseUrl}/data/BRINT34ReleasedProducts/Microsoft.Dynamics.DataEntities.changeStatus";
+
+                var statusPayload = new
+                {
+                    _itemId = itemId,
+                    _dataAreaId = "BR",
+                    _status = int3plStatus
+                };
+
+                var statusJson = JsonSerializer.Serialize(statusPayload);
+                var statusContent = new StringContent(statusJson, Encoding.UTF8, "application/json");
+
+                var statusResponse = await _httpClient.PostAsync(statusChangeEndpoint, statusContent);
+
+                if (statusResponse.IsSuccessStatusCode)
+                {
+                    _logger.LogDebug($"✅ INT3PLStatus mis à jour (changeStatus) pour l'article {itemId}: {int3plStatus}");
+                    await _jsonOutService.LogSuccessAsync($"INT3PL_{itemId}", $"INT3PLStatus updated to {int3plStatus} via changeStatus");
+                    return;
+                }
+
+                // Si toutes les méthodes échouent
+                var finalError = await statusResponse.Content.ReadAsStringAsync();
+                _logger.LogWarning($"⚠️ Impossible de mettre à jour INT3PLStatus pour {itemId}: {statusResponse.StatusCode} - {finalError}");
+                await _jsonOutService.LogErrorAsync($"INT3PL_{itemId}", jsonPayload, finalError, (int)statusResponse.StatusCode);
             }
             catch (Exception ex)
             {
@@ -789,5 +1167,18 @@ namespace DynamicsApiToDatabase.Services
 
             return report;
         }
+    }
+
+    /// <summary>
+    /// Classe pour représenter une ligne de Sales Order avec WMSTRansRecId
+    /// </summary>
+    public class SalesOrderLine
+    {
+        public string ItemId { get; set; } = "";
+        public string OrderId { get; set; } = "";
+        public int LineNumber { get; set; }
+        public decimal Quantity { get; set; }
+        public string Status { get; set; } = "";
+        public long WMSTRansRecId { get; set; } // ✅ NOUVEAU : ID requis pour PATCH
     }
 }
