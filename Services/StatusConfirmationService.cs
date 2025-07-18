@@ -561,13 +561,13 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Confirme une Sales Order avec PATCH sur BRPackingSlipInterfaces - VERSION AVEC CORRECTION FORCÉE
+        /// Confirme une Sales Order avec PATCH sur BRPackingSlipInterfaces - VERSION AVEC ProcessedBy3PL
         /// </summary>
         public async Task<bool> ConfirmSalesOrderWithStatusUpdateAsync(string token, string salesOrderId, string int3plStatus = "ProcessedBy3PL")
         {
             try
             {
-                _logger.LogInformation($"📤 Confirmation Sales Order avec correction forcée: {salesOrderId}");
+                _logger.LogInformation($"📤 Confirmation Sales Order avec ProcessedBy3PL: {salesOrderId}");
 
                 // ✅ CORRECTION TEMPORAIRE : Forcer les bonnes valeurs pour SO001824
                 if (salesOrderId == "SO001824")
@@ -604,7 +604,7 @@ namespace DynamicsApiToDatabase.Services
                     {
                         _logger.LogInformation($"🔄 PATCH forcé: Item={line.ItemId}, WMSTRansRecId={line.WMSTRansRecId}");
 
-                        var success = await UpdatePackingSlipLineStatusAsync(token, line.WMSTRansRecId, int3plStatus);
+                        var success = await UpdatePackingSlipLineStatusAsync(token, line.WMSTRansRecId, "ProcessedBy3PL"); // ✅ VALEUR CORRECTE
                         if (success)
                         {
                             forcedSuccessCount++;
@@ -618,7 +618,7 @@ namespace DynamicsApiToDatabase.Services
                     if (forcedSuccessCount > 0)
                     {
                         await _jsonOutService.LogSuccessAsync($"SALES_ORDER_{salesOrderId}",
-                            $"SO001824 forced update: {forcedSuccessCount}/{forcedLines.Count} lines updated with status {int3plStatus}");
+                            $"SO001824 forced update: {forcedSuccessCount}/{forcedLines.Count} lines updated with status ProcessedBy3PL");
                     }
                     else
                     {
@@ -629,8 +629,7 @@ namespace DynamicsApiToDatabase.Services
                     return forcedSuccessCount > 0;
                 }
 
-                // ✅ MÉTHODE NORMALE pour les autres Sales Orders
-                // ✅ ÉTAPE 1: Récupérer les lignes de la Sales Order avec les vrais WMSTRansRecId
+                // ✅ MÉTHODE NORMALE pour les autres Sales Orders avec ProcessedBy3PL
                 var orderLines = await GetSalesOrderLinesAsync(salesOrderId);
 
                 if (orderLines.Count == 0)
@@ -644,7 +643,7 @@ namespace DynamicsApiToDatabase.Services
                 var normalSuccessCount = 0;
                 var errorMessages = new List<string>();
 
-                // ✅ ÉTAPE 2: Faire un PATCH pour chaque ligne avec son WMSTRansRecId
+                // ✅ ÉTAPE 2: Faire un PATCH pour chaque ligne avec ProcessedBy3PL
                 foreach (var line in orderLines)
                 {
                     var wmsTransRecId = line.WMSTRansRecId;
@@ -653,7 +652,7 @@ namespace DynamicsApiToDatabase.Services
                     {
                         _logger.LogDebug($"🔄 PATCH ligne WMSTRansRecId={wmsTransRecId}, Item={line.ItemId}");
 
-                        var success = await UpdatePackingSlipLineStatusAsync(token, wmsTransRecId, int3plStatus);
+                        var success = await UpdatePackingSlipLineStatusAsync(token, wmsTransRecId, "ProcessedBy3PL"); // ✅ VALEUR CORRECTE
                         if (success)
                         {
                             normalSuccessCount++;
@@ -684,7 +683,7 @@ namespace DynamicsApiToDatabase.Services
 
                     // Enregistrer le succès
                     await _jsonOutService.LogSuccessAsync($"SALES_ORDER_{salesOrderId}",
-                        $"Updated {normalSuccessCount}/{orderLines.Count} lines with status {int3plStatus} via PATCH BRPackingSlipInterfaces");
+                        $"Updated {normalSuccessCount}/{orderLines.Count} lines with status ProcessedBy3PL via PATCH BRPackingSlipInterfaces");
                 }
                 else
                 {
@@ -705,7 +704,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Met à jour une ligne de PackingSlip avec URL corrigée - VERSION FINALE
+        /// Met à jour une ligne de PackingSlip avec URL corrigée - VERSION AVEC ProcessedBy3PL
         /// </summary>
         private async Task<bool> UpdatePackingSlipLineStatusAsync(string token, long wmsTransRecId, string int3plStatus)
         {
@@ -719,16 +718,38 @@ namespace DynamicsApiToDatabase.Services
 
                 _logger.LogDebug($"🔗 URL construite: {endpoint}");
 
-                // ✅ PAYLOAD EXACT comme Postman
+                // ✅ ÉTAPE 1: Vérifier l'état actuel du champ
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var checkResponse = await _httpClient.GetAsync(endpoint);
+                if (checkResponse.IsSuccessStatusCode)
+                {
+                    var currentData = await checkResponse.Content.ReadAsStringAsync();
+                    var currentDoc = JsonDocument.Parse(currentData);
+
+                    var currentStatus = "NULL";
+                    if (currentDoc.RootElement.TryGetProperty("INT3PLStatus", out var statusProp))
+                    {
+                        currentStatus = statusProp.ValueKind == JsonValueKind.Null ? "NULL" : statusProp.GetString();
+                    }
+
+                    _logger.LogInformation($"🔍 Status actuel pour WMSTRansRecId={wmsTransRecId}: {currentStatus}");
+                }
+
+                // ✅ PAYLOAD CORRECT : Utiliser ProcessedBy3PL
                 var payload = new
                 {
-                    INT3PLStatus = int3plStatus
+                    INT3PLStatus = int3plStatus ?? "ProcessedBy3PL" // ✅ VALEUR CORRECTE
                 };
 
                 var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
                 {
                     PropertyNamingPolicy = null
                 });
+
+                _logger.LogDebug($"📤 Payload envoyé: {jsonPayload}");
 
                 await _jsonOutService.LogJsonSentAsync($"PACKING_SLIP_{wmsTransRecId}", jsonPayload, endpoint);
 
@@ -747,6 +768,11 @@ namespace DynamicsApiToDatabase.Services
                 {
                     _logger.LogInformation($"✅ PATCH réussi pour WMSTRansRecId={wmsTransRecId}: {int3plStatus}");
                     await _jsonOutService.LogSuccessAsync($"PACKING_SLIP_{wmsTransRecId}", responseContent);
+
+                    // ✅ VÉRIFICATION POST-PATCH
+                    await Task.Delay(1000); // Attendre 1 seconde
+                    await VerifyPatchResultAsync(token, endpoint, wmsTransRecId, int3plStatus);
+
                     return true;
                 }
                 else
@@ -754,7 +780,10 @@ namespace DynamicsApiToDatabase.Services
                     var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
                     _logger.LogError($"❌ PATCH échoué pour WMSTRansRecId={wmsTransRecId}: {errorMessage}");
                     await _jsonOutService.LogErrorAsync($"PACKING_SLIP_{wmsTransRecId}", jsonPayload, errorMessage, (int)response.StatusCode);
-                    return false;
+
+                    // ✅ ESSAYER PUT EN FALLBACK
+                    _logger.LogWarning($"⚠️ PATCH échoué, tentative avec PUT...");
+                    return await UpdatePackingSlipLineWithPutAsync(token, wmsTransRecId, int3plStatus);
                 }
             }
             catch (Exception ex)
@@ -765,6 +794,146 @@ namespace DynamicsApiToDatabase.Services
             }
         }
 
+        /// <summary>
+        /// Met à jour avec PUT pour forcer ProcessedBy3PL même si elle était null
+        /// </summary>
+        private async Task<bool> UpdatePackingSlipLineWithPutAsync(string token, long wmsTransRecId, string int3plStatus)
+        {
+            try
+            {
+                _logger.LogInformation($"🔄 PUT BRPackingSlipInterfaces WMSTRansRecId={wmsTransRecId} -> {int3plStatus}");
+
+                var baseUrlClean = _baseUrl.TrimEnd('/');
+                var endpoint = $"{baseUrlClean}/data/BRPackingSlipInterfaces(WMSTRansRecId={wmsTransRecId},dataAreaId='br')";
+
+                // ✅ ÉTAPE 1: Récupérer l'objet complet
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var getResponse = await _httpClient.GetAsync(endpoint);
+                if (!getResponse.IsSuccessStatusCode)
+                {
+                    _logger.LogError($"❌ Impossible de récupérer l'objet pour WMSTRansRecId={wmsTransRecId}");
+                    return false;
+                }
+
+                var existingData = await getResponse.Content.ReadAsStringAsync();
+                var existingDoc = JsonDocument.Parse(existingData);
+
+                // ✅ ÉTAPE 2: Créer l'objet complet avec ProcessedBy3PL
+                var updatedObject = new Dictionary<string, object>();
+
+                foreach (var property in existingDoc.RootElement.EnumerateObject())
+                {
+                    if (property.Name == "@odata.etag") continue; // Ignorer l'etag
+
+                    if (property.Name == "INT3PLStatus")
+                    {
+                        updatedObject[property.Name] = int3plStatus ?? "ProcessedBy3PL"; // ✅ FORCER ProcessedBy3PL
+                    }
+                    else
+                    {
+                        // Conserver les autres valeurs
+                        updatedObject[property.Name] = property.Value.ValueKind switch
+                        {
+                            JsonValueKind.String => property.Value.GetString(),
+                            JsonValueKind.Number => property.Value.GetDecimal(),
+                            JsonValueKind.True => true,
+                            JsonValueKind.False => false,
+                            JsonValueKind.Null => null,
+                            _ => property.Value.GetRawText()
+                        };
+                    }
+                }
+
+                var putPayload = JsonSerializer.Serialize(updatedObject, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = null
+                });
+
+                _logger.LogDebug($"📤 PUT Payload avec ProcessedBy3PL: {putPayload.Substring(0, Math.Min(200, putPayload.Length))}...");
+
+                // ✅ ÉTAPE 3: Envoyer le PUT
+                var putContent = new StringContent(putPayload, Encoding.UTF8, "application/json");
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var putResponse = await _httpClient.PutAsync(endpoint, putContent);
+                var putResponseContent = await putResponse.Content.ReadAsStringAsync();
+
+                if (putResponse.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"✅ PUT réussi pour WMSTRansRecId={wmsTransRecId}: {int3plStatus}");
+                    await _jsonOutService.LogSuccessAsync($"PUT_PACKING_SLIP_{wmsTransRecId}", putResponseContent);
+
+                    // ✅ VÉRIFICATION POST-PUT
+                    await Task.Delay(1000);
+                    await VerifyPatchResultAsync(token, endpoint, wmsTransRecId, int3plStatus);
+
+                    return true;
+                }
+                else
+                {
+                    var errorMessage = $"HTTP {putResponse.StatusCode}: {putResponseContent}";
+                    _logger.LogError($"❌ PUT échoué pour WMSTRansRecId={wmsTransRecId}: {errorMessage}");
+                    await _jsonOutService.LogErrorAsync($"PUT_PACKING_SLIP_{wmsTransRecId}", putPayload, errorMessage, (int)putResponse.StatusCode);
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception PUT WMSTRansRecId={wmsTransRecId}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Vérifie que le PATCH a bien fonctionné
+        /// </summary>
+        private async Task VerifyPatchResultAsync(string token, string endpoint, long wmsTransRecId, string expectedStatus)
+        {
+            try
+            {
+                _logger.LogDebug($"🔍 Vérification PATCH pour WMSTRansRecId={wmsTransRecId}");
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                var verifyResponse = await _httpClient.GetAsync(endpoint);
+                if (verifyResponse.IsSuccessStatusCode)
+                {
+                    var verifyContent = await verifyResponse.Content.ReadAsStringAsync();
+                    var verifyDoc = JsonDocument.Parse(verifyContent);
+
+                    var actualStatus = "NULL";
+                    if (verifyDoc.RootElement.TryGetProperty("INT3PLStatus", out var statusProp))
+                    {
+                        actualStatus = statusProp.ValueKind == JsonValueKind.Null ? "NULL" : statusProp.GetString();
+                    }
+
+                    if (actualStatus == expectedStatus)
+                    {
+                        _logger.LogInformation($"✅ VÉRIFICATION OK: WMSTRansRecId={wmsTransRecId}, Status={actualStatus}");
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"⚠️ VÉRIFICATION ÉCHOUÉE: WMSTRansRecId={wmsTransRecId}, Attendu={expectedStatus}, Actuel={actualStatus}");
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Impossible de vérifier le PATCH pour WMSTRansRecId={wmsTransRecId}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur vérification PATCH WMSTRansRecId={wmsTransRecId}");
+            }
+        }
         /// <summary>
         /// Met à jour le statut d'un item avec l'endpoint changeStatus - VERSION CORRECTE
         /// </summary>
@@ -1147,7 +1316,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Récupère les lignes d'une Sales Order avec debug - VERSION CORRIGÉE FINALE
+        /// Récupère les lignes d'une Sales Order avec les vraies valeurs WMSTRansRecId - VERSION CORRIGÉE
         /// </summary>
         private async Task<List<SalesOrderLine>> GetSalesOrderLinesAsync(string salesOrderId)
         {
@@ -1157,51 +1326,41 @@ namespace DynamicsApiToDatabase.Services
                 var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
                 var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
 
-                // ✅ UTILISER LA MÉTHODE DEBUG COMPLÈTE du SqlServerDatabaseService
-                var orderLines = await sqlServerService.GetSalesOrderLinesAsync(salesOrderId);
+                // ✅ UTILISER LA MÉTHODE DEBUG qui donne les bonnes valeurs
+                var debugInfos = await sqlServerService.GetSalesOrderDebugInfoAsync(salesOrderId);
 
                 var salesOrderLines = new List<SalesOrderLine>();
 
-                _logger.LogInformation($"📊 Conversion de {orderLines.Count} lignes récupérées pour {salesOrderId}");
+                _logger.LogInformation($"📊 Conversion de {debugInfos.Count} lignes debug récupérées pour {salesOrderId}");
 
-                foreach (var line in orderLines)
+                foreach (var info in debugInfos)
                 {
-                    // ✅ CORRECTION CRITIQUE : 
-                    // Dans SqlServerDatabaseService, le VRAI WMSTRansRecId est récupéré depuis le JSON
-                    // et stocké dans LineNumber. MAIS on doit utiliser la logique de SqlServerDatabaseService !
+                    // ✅ UTILISER DIRECTEMENT WMSTransRecIdLong qui contient la vraie valeur
+                    var wmsTransRecId = info.WMSTransRecIdLong;
 
-                    // On va re-parser le JSON nous-mêmes pour obtenir la vraie valeur
-                    var wmsTransRecId = (long)line.LineNumber; // Utiliser ce que SqlServerDatabaseService a stocké
+                    _logger.LogInformation($"🔄 StatusConfirmationService - Traitement ligne: Item={info.ItemId}, WMSTRansRecId={wmsTransRecId}");
 
-                    _logger.LogInformation($"🔄 StatusConfirmationService - Traitement ligne: Item={line.ItemId}, WMSTRansRecId={wmsTransRecId}");
-
-                    if (wmsTransRecId > 0)
+                    if (wmsTransRecId > 0 && !string.IsNullOrEmpty(info.ItemId))
                     {
                         salesOrderLines.Add(new SalesOrderLine
                         {
-                            ItemId = line.ItemId,
-                            OrderId = line.OrderId,
-                            LineNumber = line.LineNumber,
-                            Quantity = line.Quantity,
-                            Status = line.Status,
-                            WMSTRansRecId = wmsTransRecId  // ✅ Utiliser la valeur corrigée
+                            ItemId = info.ItemId,
+                            OrderId = salesOrderId,
+                            LineNumber = (int)wmsTransRecId, // Pas important, utilisé seulement pour affichage
+                            Quantity = decimal.TryParse(info.Quantity, out var qty) ? qty : 0,
+                            Status = info.CurrentStatus,
+                            WMSTRansRecId = wmsTransRecId  // ✅ Utiliser la valeur CORRECTE
                         });
 
-                        _logger.LogInformation($"✅ StatusConfirmationService - Ligne préparée: Item={line.ItemId}, WMSTRansRecId={wmsTransRecId}");
+                        _logger.LogInformation($"✅ StatusConfirmationService - Ligne préparée: Item={info.ItemId}, WMSTRansRecId={wmsTransRecId}");
                     }
                     else
                     {
-                        _logger.LogWarning($"⚠️ StatusConfirmationService - Ligne ignorée: WMSTRansRecId invalide ({wmsTransRecId}) pour Item={line.ItemId}");
+                        _logger.LogWarning($"⚠️ StatusConfirmationService - Ligne ignorée: WMSTRansRecId invalide ({wmsTransRecId}) pour Item={info.ItemId}");
                     }
                 }
 
                 _logger.LogInformation($"📊 StatusConfirmationService - {salesOrderLines.Count} lignes Sales Order valides préparées pour confirmation");
-
-                // ✅ LOG FINAL pour vérifier les valeurs avant envoi
-                foreach (var line in salesOrderLines)
-                {
-                    _logger.LogInformation($"📋 StatusConfirmationService - Ligne finale: {line.ItemId} -> WMSTRansRecId={line.WMSTRansRecId}");
-                }
 
                 return salesOrderLines;
             }
