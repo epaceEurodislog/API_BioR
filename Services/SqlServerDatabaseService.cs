@@ -13,6 +13,8 @@ using System.Text;
 using System.Collections.Generic;
 using System.Linq;
 using DynamicsApiToDatabase.Models;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DynamicsApiToDatabase.Services
 {
@@ -535,10 +537,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Récupère les lignes d'une Sales Order depuis JSON_IN
-        /// </summary>
-        /// <summary>
-        /// Récupère les lignes d'une Sales Order depuis JSON_IN - VERSION CORRIGÉE
+        /// Récupère les lignes d'une Sales Order avec debug complet - VERSION DEBUG
         /// </summary>
         public async Task<List<OrderLineInfo>> GetSalesOrderLinesAsync(string salesOrderId)
         {
@@ -549,19 +548,167 @@ namespace DynamicsApiToDatabase.Services
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
+                _logger.LogInformation($"🔍 Recherche lignes pour Sales Order: {salesOrderId}");
+
                 const string sql = @"
             SELECT 
-                JSON_DATA,
+                JSON_KEYU,
                 JSON_VALUE(JSON_DATA, '$.transRefId') as SalesOrderId,
-                JSON_VALUE(JSON_DATA, '$.BRPortalOrderNumber') as PortalOrderNumber,
                 JSON_VALUE(JSON_DATA, '$.itemId') as ItemId,
-                JSON_VALUE(JSON_DATA, '$.WMSTRansRecId') as LineRecId,
+                JSON_VALUE(JSON_DATA, '$.WMSTRansRecId') as WMSTRansRecId,
                 JSON_VALUE(JSON_DATA, '$.qty') as Quantity,
-                JSON_VALUE(JSON_DATA, '$.INT3PLStatus') as Status
+                JSON_VALUE(JSON_DATA, '$.INT3PLStatus') as Status,
+                JSON_VALUE(JSON_DATA, '$.dataAreaId') as DataAreaId,
+                JSON_CRDA as CreatedDate,
+                -- ✅ AJOUT : Récupérer aussi le JSON brut pour diagnostic
+                JSON_DATA as RawJson
             FROM JSON_IN 
             WHERE JSON_FROM = 'data/BRPackingSlipInterfaces'
             AND JSON_VALUE(JSON_DATA, '$.transRefId') = @SalesOrderId
             AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            ORDER BY JSON_KEYU";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@SalesOrderId", salesOrderId);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var jsonKeyU = reader.GetInt32("JSON_KEYU");
+                    var itemId = reader.IsDBNull("ItemId") ? "" : reader.GetString("ItemId");
+                    var wmsTransRecIdStr = reader.IsDBNull("WMSTRansRecId") ? "" : reader.GetString("WMSTRansRecId");
+                    var quantityStr = reader.IsDBNull("Quantity") ? "0" : reader.GetString("Quantity");
+                    var status = reader.IsDBNull("Status") ? "" : reader.GetString("Status");
+                    var dataAreaId = reader.IsDBNull("DataAreaId") ? "" : reader.GetString("DataAreaId");
+                    var rawJson = reader.GetString("RawJson");
+
+                    // ✅ DEBUG COMPLET
+                    _logger.LogInformation($"📊 Ligne trouvée:");
+                    _logger.LogInformation($"   JSON_KEYU: {jsonKeyU}");
+                    _logger.LogInformation($"   ItemId: {itemId}");
+                    _logger.LogInformation($"   WMSTRansRecId (string): '{wmsTransRecIdStr}'");
+                    _logger.LogInformation($"   DataAreaId: {dataAreaId}");
+                    _logger.LogInformation($"   Status: {status}");
+
+                    // ✅ EXTRACTION MANUELLE depuis le JSON brut pour vérification
+                    var manualWmsRecId = ExtractWMSTRansRecIdManually(rawJson);
+                    _logger.LogInformation($"   WMSTRansRecId (manuel): {manualWmsRecId}");
+
+                    // ✅ CONVERSION avec vérification
+                    if (long.TryParse(wmsTransRecIdStr, out var wmsTransRecId))
+                    {
+                        _logger.LogInformation($"   ✅ Conversion réussie: {wmsTransRecIdStr} -> {wmsTransRecId}");
+
+                        // Vérifier la cohérence avec extraction manuelle
+                        if (manualWmsRecId != wmsTransRecId)
+                        {
+                            _logger.LogWarning($"   ⚠️ INCOHÉRENCE: JSON_VALUE={wmsTransRecId} vs Manuel={manualWmsRecId}");
+                        }
+                    }
+                    else
+                    {
+                        _logger.LogError($"   ❌ Conversion échouée: '{wmsTransRecIdStr}' n'est pas un long valide");
+                        wmsTransRecId = manualWmsRecId; // Utiliser la valeur manuelle
+                    }
+
+                    if (wmsTransRecId > 0 && !string.IsNullOrEmpty(itemId))
+                    {
+                        _logger.LogInformation($"🔍 STOCKAGE: wmsTransRecId={wmsTransRecId}, va être stocké dans LineNumber={wmsTransRecId}");
+                        orderLines.Add(new OrderLineInfo
+                        {
+                            OrderId = salesOrderId,
+                            ItemId = itemId,
+                            LineNumber = (int)wmsTransRecId, // ✅ ATTENTION: Stockage dans LineNumber
+                            Quantity = decimal.TryParse(quantityStr, out var qty) ? qty : 0,
+                            OrderType = "Sales",
+                            Status = status,
+                            CreatedDate = reader.GetDateTime("CreatedDate"),
+                            LastUpdated = DateTime.Now
+                        });
+                        _logger.LogInformation($"🔍 VÉRIFICATION: LineNumber stocké={(int)wmsTransRecId}");
+                        _logger.LogInformation($"   ✅ Ligne ajoutée: Item={itemId}, WMSTRansRecId={wmsTransRecId}");
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"   ⚠️ Ligne ignorée: WMSTRansRecId={wmsTransRecId}, Item='{itemId}'");
+                    }
+                }
+
+                _logger.LogInformation($"📊 {orderLines.Count} lignes valides récupérées pour Sales Order {salesOrderId}");
+                return orderLines;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes Sales Order {salesOrderId}");
+                return orderLines;
+            }
+        }
+
+        /// <summary>
+        /// Extraction manuelle du WMSTRansRecId depuis le JSON brut
+        /// </summary>
+        private long ExtractWMSTRansRecIdManually(string jsonData)
+        {
+            try
+            {
+                using var jsonDoc = JsonDocument.Parse(jsonData);
+                var root = jsonDoc.RootElement;
+
+                if (root.TryGetProperty("WMSTRansRecId", out var property))
+                {
+                    if (property.ValueKind == JsonValueKind.Number)
+                    {
+                        return property.GetInt64();
+                    }
+                    else if (property.ValueKind == JsonValueKind.String)
+                    {
+                        var stringValue = property.GetString();
+                        if (long.TryParse(stringValue, out var result))
+                        {
+                            return result;
+                        }
+                    }
+                }
+
+                return 0;
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Méthode de debug pour analyser les données Sales Orders dans JSON_IN
+        /// </summary>
+        public async Task<List<SalesOrderDebugInfo>> GetSalesOrderDebugInfoAsync(string salesOrderId)
+        {
+            var debugInfo = new List<SalesOrderDebugInfo>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT 
+                JSON_KEYU,
+                JSON_DATA,
+                JSON_VALUE(JSON_DATA, '$.transRefId') as SalesOrderId,
+                JSON_VALUE(JSON_DATA, '$.BRPortalOrderNumber') as PortalOrderNumber,
+                JSON_VALUE(JSON_DATA, '$.itemId') as ItemId,
+                JSON_VALUE(JSON_DATA, '$.WMSTRansRecId') as WMSTransRecId,
+                JSON_VALUE(JSON_DATA, '$.qty') as Quantity,
+                JSON_VALUE(JSON_DATA, '$.INT3PLStatus') as CurrentStatus,
+                JSON_VALUE(JSON_DATA, '$.expeditionStatus') as ExpeditionStatus,
+                JSON_VALUE(JSON_DATA, '$.dataAreaId') as DataAreaId,
+                JSON_CRDA as CreatedDate,
+                JSON_STAT as Status
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRPackingSlipInterfaces'
+            AND (JSON_VALUE(JSON_DATA, '$.transRefId') = @SalesOrderId 
+                 OR JSON_VALUE(JSON_DATA, '$.BRPortalOrderNumber') = @SalesOrderId)
             ORDER BY CAST(JSON_VALUE(JSON_DATA, '$.WMSTRansRecId') AS BIGINT)";
 
                 using var command = new SqlCommand(sql, connection);
@@ -571,34 +718,63 @@ namespace DynamicsApiToDatabase.Services
 
                 while (await reader.ReadAsync())
                 {
-                    var itemId = reader.IsDBNull("ItemId") ? "" : reader.GetString("ItemId");
-                    var lineRecIdStr = reader.IsDBNull("LineRecId") ? "0" : reader.GetString("LineRecId");
-                    var quantityStr = reader.IsDBNull("Quantity") ? "0" : reader.GetString("Quantity");
-                    var status = reader.IsDBNull("Status") ? "" : reader.GetString("Status");
-
-                    if (!string.IsNullOrEmpty(itemId))
+                    debugInfo.Add(new SalesOrderDebugInfo
                     {
-                        orderLines.Add(new OrderLineInfo
-                        {
-                            OrderId = salesOrderId,
-                            ItemId = itemId,
-                            LineNumber = int.TryParse(lineRecIdStr, out var lineNum) ? lineNum : 0, // ✅ CORRIGÉ : Stocker WMSTRansRecId dans LineNumber
-                            Quantity = decimal.TryParse(quantityStr, out var qty) ? qty : 0,
-                            OrderType = "Sales",
-                            Status = status,
-                            CreatedDate = DateTime.Now,
-                            LastUpdated = DateTime.Now
-                        });
-                    }
+                        JsonKeyU = reader.GetInt32("JSON_KEYU"),
+                        SalesOrderId = reader.IsDBNull("SalesOrderId") ? "" : reader.GetString("SalesOrderId"),
+                        PortalOrderNumber = reader.IsDBNull("PortalOrderNumber") ? "" : reader.GetString("PortalOrderNumber"),
+                        ItemId = reader.IsDBNull("ItemId") ? "" : reader.GetString("ItemId"),
+                        WMSTransRecIdStr = reader.IsDBNull("WMSTransRecId") ? "" : reader.GetString("WMSTransRecId"),
+                        Quantity = reader.IsDBNull("Quantity") ? "" : reader.GetString("Quantity"),
+                        CurrentStatus = reader.IsDBNull("CurrentStatus") ? "" : reader.GetString("CurrentStatus"),
+                        ExpeditionStatus = reader.IsDBNull("ExpeditionStatus") ? "" : reader.GetString("ExpeditionStatus"),
+                        DataAreaId = reader.IsDBNull("DataAreaId") ? "" : reader.GetString("DataAreaId"),
+                        CreatedDate = reader.GetDateTime("CreatedDate"),
+                        RecordStatus = reader.IsDBNull("Status") ? "" : reader.GetString("Status"),
+                        RawJsonData = reader.GetString("JSON_DATA")
+                    });
                 }
 
-                _logger.LogInformation($"📊 {orderLines.Count} lignes récupérées pour Sales Order {salesOrderId}");
-                return orderLines;
+                _logger.LogInformation($"🔍 Debug info récupérée: {debugInfo.Count} lignes pour Sales Order {salesOrderId}");
+
+                // Log détaillé pour diagnostic
+                foreach (var info in debugInfo)
+                {
+                    _logger.LogInformation($"📊 Ligne {info.JsonKeyU}: WMSTransRecId={info.WMSTransRecIdStr}, Item={info.ItemId}, Status={info.CurrentStatus}");
+                }
+
+                return debugInfo;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Erreur récupération lignes Sales Order {salesOrderId}");
-                return orderLines;
+                _logger.LogError(ex, $"❌ Erreur récupération debug info Sales Order {salesOrderId}");
+                return debugInfo;
+            }
+        }
+
+        /// <summary>
+        /// Classe pour les informations de debug des Sales Orders
+        /// </summary>
+        public class SalesOrderDebugInfo
+        {
+            public int JsonKeyU { get; set; }
+            public string SalesOrderId { get; set; } = "";
+            public string PortalOrderNumber { get; set; } = "";
+            public string ItemId { get; set; } = "";
+            public string WMSTransRecIdStr { get; set; } = "";
+            public string Quantity { get; set; } = "";
+            public string CurrentStatus { get; set; } = "";
+            public string ExpeditionStatus { get; set; } = "";
+            public string DataAreaId { get; set; } = "";
+            public DateTime CreatedDate { get; set; }
+            public string RecordStatus { get; set; } = "";
+            public string RawJsonData { get; set; } = "";
+
+            public long WMSTransRecIdLong => long.TryParse(WMSTransRecIdStr, out var result) ? result : 0;
+
+            public string GetSummary()
+            {
+                return $"ID:{JsonKeyU} | WMSRecId:{WMSTransRecIdStr} | Item:{ItemId} | Status:{CurrentStatus} | Area:{DataAreaId}";
             }
         }
 

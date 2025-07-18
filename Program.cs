@@ -170,6 +170,68 @@ namespace DynamicsApiToDatabase
         }
 
         /// <summary>
+        /// Teste et diagnostique une Sales Order spécifique
+        /// </summary>
+        private static async Task DebugSpecificSalesOrderAsync(ServiceProvider serviceProvider, string salesOrderId)
+        {
+            try
+            {
+                Console.WriteLine($"\n🔍 === DEBUG SALES ORDER {salesOrderId} === 🔍");
+
+                var sqlServerService = serviceProvider.GetService<SqlServerDatabaseService>();
+                var statusConfirmationService = serviceProvider.GetService<StatusConfirmationService>();
+                var authService = serviceProvider.GetService<AuthenticationService>();
+
+                // 1. Récupérer les infos de debug
+                var debugInfos = await sqlServerService.GetSalesOrderDebugInfoAsync(salesOrderId);
+
+                Console.WriteLine($"📊 {debugInfos.Count} lignes trouvées dans JSON_IN:");
+                foreach (var info in debugInfos)
+                {
+                    Console.WriteLine($"   {info.GetSummary()}");
+                }
+
+                if (debugInfos.Count == 0)
+                {
+                    Console.WriteLine("❌ Aucune donnée trouvée pour cette Sales Order");
+                    return;
+                }
+
+                // 2. Tester la confirmation
+                var token = await authService.GetAccessTokenAsync();
+                if (string.IsNullOrEmpty(token))
+                {
+                    Console.WriteLine("❌ Impossible d'obtenir le token d'authentification");
+                    return;
+                }
+
+                Console.WriteLine($"\n🧪 Test de confirmation Sales Order {salesOrderId}...");
+                var confirmResult = await statusConfirmationService.ConfirmSalesOrderWithStatusUpdateAsync(token, salesOrderId, "ProcessedBy3PL");
+
+                var resultIcon = confirmResult ? "✅" : "❌";
+                Console.WriteLine($"{resultIcon} Résultat confirmation: {(confirmResult ? "SUCCÈS" : "ÉCHEC")}");
+
+                // 3. Afficher les détails après tentative
+                Console.WriteLine("\n📋 Détails des lignes:");
+                foreach (var info in debugInfos)
+                {
+                    Console.WriteLine($"   📄 Ligne {info.JsonKeyU}:");
+                    Console.WriteLine($"      WMSTransRecId: {info.WMSTransRecIdStr}");
+                    Console.WriteLine($"      ItemId: {info.ItemId}");
+                    Console.WriteLine($"      Status actuel: {info.CurrentStatus}");
+                    Console.WriteLine($"      DataAreaId: {info.DataAreaId}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Erreur debug Sales Order {salesOrderId}: {ex.Message}");
+            }
+        }
+
+        // USAGE: Ajoutez cet appel dans la méthode Main pour tester
+        // await DebugSpecificSalesOrderAsync(serviceProvider, "SO000992");
+
+        /// <summary>
         /// Essaye de confirmer des commandes spécifiques pour diagnostic
         /// </summary>
         private static async Task TrySpecificOrderConfirmationsAsync(StatusConfirmationService statusConfirmationService, string token)
@@ -206,7 +268,7 @@ namespace DynamicsApiToDatabase
             }
         }
 
-        
+
 
         private static IServiceCollection ConfigureServices()
         {
