@@ -1,39 +1,52 @@
-# 🧬 API_BioR - Synchronisation Dynamics 365
+# 🧬 API_BioR - Synchronisation Dynamics 365 vers SQL Server
 
 ## 📄 Description
 
-**API_BioR** est un outil de synchronisation intelligent entre l'API Dynamics 365 et une base de données MySQL locale. Il récupère et synchronise automatiquement les **articles** et **commandes** (Achat, Retour, Transfert) avec détection intelligente des modifications.
+**API_BioR** est un outil de synchronisation intelligent entre l'API Dynamics 365 et une base de données **SQL Server** (table JSON_IN). Il récupère et synchronise automatiquement les **articles**, **commandes** (Achat, Retour, Transfert, Vente) avec détection intelligente des modifications et **confirmations automatiques** des commandes.
+
+**🆕 Version SQL Server avec :**
+
+- Synchronisation vers table **JSON_IN** (Middleware)
+- Confirmations automatiques Purchase/Return/Transfer/Sales Orders
+- Mise à jour **INT3PLStatus**
+- Traçabilité complète avec **JSON_OUT**
+- Lancement automatique du **DynamicsToXmlTranslator**
 
 ## 🏗️ Architecture Technique
 
 ### **Technologies utilisées :**
 
-- **.NET 6.0** (Console Application)
+- **.NET 8.0** (Console Application)
 - **C#** avec architecture modulaire
-- **MySQL** pour le stockage local
+- **SQL Server** (base Middleware - 7.2.160.173)
 - **HTTP Client** pour l'API Dynamics 365
 - **Microsoft.Extensions** pour l'injection de dépendances
 - **JSON** pour la sérialisation des données
 
 ### **Fichiers de code principaux :**
 
-**📁 Emplacement des fichiers :**
+**📁 Structure du projet :**
 
 ```
 API_BioR/
-├── Program.cs                      # ← Orchestrateur principal
+├── Program.cs                           # ← Orchestrateur principal
 ├── Services/
-│   ├── AuthenticationService.cs    # ← Authentification OAuth2
-│   ├── ArticlesSyncService.cs      # ← Synchronisation articles
-│   ├── OrdersSyncService.cs        # ← Synchronisation commandes
-│   └── DatabaseService.cs          # ← Gestion base de données
+│   ├── AuthenticationService.cs         # ← Authentification OAuth2
+│   ├── DynamicsDataService.cs          # ← Synchronisation intelligente
+│   ├── StatusConfirmationService.cs    # ← Confirmations commandes/articles
+│   ├── SqlServerDatabaseService.cs     # ← Gestion base SQL Server
+│   ├── JsonOutService.cs              # ← Traçabilité JSON_OUT
+│   └── ExternalProgramLauncher.cs     # ← Lancement DynamicsToXmlTranslator
 ├── Models/
-│   └── DynamicsModels.cs           # ← Classes de données
-├── Database/
-│   └── DatabaseInitializer.cs     # ← Initialisation des tables
-├── DynamicsApiToDatabase.csproj    # ← Configuration projet
-├── appsettings.json.example        # ← Template configuration
-└── appsettings.json                # ← Configuration (à créer)
+│   ├── DynamicsModels.cs               # ← Classes de données principales
+│   └── JsonOutModels.cs               # ← Modèles traçabilité
+├── Utilities/
+│   ├── ConfirmationHelper.cs          # ← Helpers confirmation simplifiés
+│   ├── StatusHelper.cs                # ← Helpers statut articles
+│   └── OrderConfirmationHelper.cs     # ← Helpers confirmation commandes
+├── DynamicsApiToDatabase.csproj       # ← Configuration projet .NET 8
+├── appsettings.json.example           # ← Template configuration
+└── appsettings.json                   # ← Configuration (à créer)
 ```
 
 ## ⚙️ Configuration
@@ -49,7 +62,12 @@ API_BioR/
   "ClientSecret": "votre-client-secret",
   "ResourceUrl": "https://votre-instance.operations.dynamics.com/",
   "ConnectionStrings": {
-    "DefaultConnection": "Server=localhost;Port=3306;Database=dynamics_sync;Uid=root;Pwd=VOTRE_MDP;"
+    "DefaultConnection": "Server=7.2.160.173;Database=Middleware;Uid=votre_user;Pwd=votre_mdp;TrustServerCertificate=True;"
+  },
+  "ExternalPrograms": {
+    "TranslatorEnabled": true,
+    "TranslatorPath": "C:\\chemin\\vers\\DynamicsToXmlTranslator.exe",
+    "TimeoutMinutes": 5
   },
   "Logging": {
     "LogLevel": {
@@ -67,14 +85,53 @@ API_BioR/
 - **Permissions** sur l'API Dynamics 365
 - **Client Secret** généré et valide
 
+## 🗄️ Architecture de la Base de Données SQL Server
+
+### **Table principale : JSON_IN**
+
+La table **JSON_IN** stocke tous les données synchronisées depuis Dynamics :
+
+```sql
+-- Structure de la table JSON_IN (existante dans Middleware)
+JSON_KEYU       INT IDENTITY(1,1) PRIMARY KEY    -- Clé auto-incrémentée
+JSON_CRDA       DATETIME DEFAULT GETDATE()       -- Date de création
+JSON_FROM       NVARCHAR(255)                    -- Endpoint source (ex: data/BRINT34ReleasedProducts)
+JSON_CCLI       NVARCHAR(10) DEFAULT 'BR'        -- Code client
+JSON_DATA       NTEXT                            -- Données JSON brutes
+JSON_TRTP       INT DEFAULT 0                    -- Type transaction
+JSON_TRDA       DATETIME DEFAULT GETDATE()       -- Date transaction
+JSON_TREN       NVARCHAR(50) DEFAULT 'SPEED'     -- Environnement
+JSON_BKEY       NVARCHAR(255)                    -- Clé métier unique
+JSON_HASH       NVARCHAR(255)                    -- Hash MD5 du contenu
+JSON_STAT       NVARCHAR(20) DEFAULT 'ACTIVE'    -- Statut (ACTIVE/DELETED)
+JSON_SENT       BIT DEFAULT 0                    -- 🆕 Colonne confirmation
+```
+
+### **Table de traçabilité : JSON_OUT**
+
+La table **JSON_OUT** trace tous les envois vers l'API :
+
+```sql
+-- Structure de la table JSON_OUT (existante dans Middleware)
+JSON_KEYU       INT IDENTITY(1,1) PRIMARY KEY    -- Clé auto-incrémentée
+JSON_CRDA       DATETIME DEFAULT GETDATE()       -- Date de création
+JSON_DEST       NVARCHAR(50)                     -- Destination (endpoint raccourci)
+JSON_CCLI       NVARCHAR(10) DEFAULT 'BR'        -- Code client
+JSON_DATA       NTEXT                            -- Payload JSON envoyé
+JSON_TRTP       INT DEFAULT 1                    -- Type transaction (1=envoi)
+JSON_TRDA       DATETIME DEFAULT GETDATE()       -- Date transaction
+JSON_TREN       NVARCHAR(50)                     -- Environnement/tracking
+```
+
 ## 🚀 Installation et Lancement
 
 ### **Prérequis**
 
-- **.NET 6.0 SDK** installé
-- **MySQL/WAMP/XAMPP** en fonctionnement
+- **.NET 8.0 SDK** installé
+- **Accès à SQL Server** (7.2.160.173 - Base Middleware)
 - **Accès à l'API Dynamics 365** configuré
 - **Permissions Azure AD** accordées
+- **DynamicsToXmlTranslator.exe** (optionnel)
 
 ### **1. Installation des dépendances**
 
@@ -89,8 +146,9 @@ dotnet restore
 # Copier le template de configuration
 cp appsettings.json.example appsettings.json
 
-# Éditer avec vos paramètres Azure et MySQL
-nano appsettings.json
+# Éditer avec vos paramètres Azure et SQL Server
+notepad appsettings.json  # Windows
+nano appsettings.json     # Linux
 ```
 
 ### **3. Première exécution**
@@ -101,434 +159,232 @@ dotnet run
 
 **L'outil va automatiquement :**
 
-- ✅ Créer la base de données `dynamics_sync`
-- ✅ Créer toutes les tables nécessaires
+- ✅ Vérifier la connexion SQL Server (Middleware)
+- ✅ Ajouter la colonne **JSON_SENT** si nécessaire
 - ✅ Tester l'authentification Azure
-- ✅ Lancer la synchronisation complète
+- ✅ Lancer la synchronisation avec confirmations
+- ✅ Exécuter **DynamicsToXmlTranslator** (si configuré)
 
-## 📊 Architecture de la Base de Données
-
-### **Tables créées automatiquement :**
-
-```sql
--- Table des articles
-CREATE TABLE articles_raw (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    json_data JSON NOT NULL,
-    content_hash VARCHAR(255) NOT NULL,
-    api_endpoint VARCHAR(255) DEFAULT 'BRINT34ReleasedProducts',
-    item_id VARCHAR(50) GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(json_data, '$.ItemId'))) STORED,
-    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    update_count INT DEFAULT 0
-);
-
--- Table des commandes de retour
-CREATE TABLE return_orders_raw (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    json_data JSON NOT NULL,
-    content_hash VARCHAR(255) NOT NULL,
-    composite_id VARCHAR(255) NOT NULL,  -- ReturnItemNum + LineNum
-    primary_key_value VARCHAR(255),      -- ReturnItemNum
-    line_number_value VARCHAR(255),      -- LineNum
-    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    update_count INT DEFAULT 0
-);
-
--- Table des commandes d'achat
-CREATE TABLE purch_orders_raw (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    json_data JSON NOT NULL,
-    content_hash VARCHAR(255) NOT NULL,
-    composite_id VARCHAR(255) NOT NULL,  -- PurchId + LineNumber
-    primary_key_value VARCHAR(255),      -- PurchId
-    line_number_value VARCHAR(255),      -- LineNumber
-    first_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    update_count INT DEFAULT 0
-);
-
--- Table des logs de synchronisation
-CREATE TABLE sync_logs (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    sync_type VARCHAR(50) NOT NULL,
-    endpoint VARCHAR(255),
-    status ENUM('SUCCESS', 'ERROR', 'WARNING') NOT NULL,
-    total_articles_processed INT DEFAULT 0,
-    new_articles INT DEFAULT 0,
-    updated_articles INT DEFAULT 0,
-    unchanged_articles INT DEFAULT 0,
-    error_count INT DEFAULT 0,
-    sync_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    execution_time_ms BIGINT DEFAULT 0,
-    error_message TEXT,
-    additional_info JSON
-);
-```
-
-## 🔧 Architecture du Code
-
-### **Program.cs - Orchestrateur principal**
-
-**📄 Fonctions principales :**
-
-```csharp
-static async Task Main(string[] args)
-{
-    // Configuration des services avec injection de dépendances
-    var services = ConfigureServices();
-    var serviceProvider = services.BuildServiceProvider();
-
-    // Initialisation de la base de données
-    var dbInitializer = serviceProvider.GetService<DatabaseInitializer>();
-    await dbInitializer.InitializeDatabaseAsync();
-
-    // Authentification
-    var authService = serviceProvider.GetService<AuthenticationService>();
-    var token = await authService.GetAccessTokenAsync();
-
-    // Synchronisation des articles
-    var articlesService = serviceProvider.GetService<ArticlesSyncService>();
-    await articlesService.SyncArticlesAsync(token);
-
-    // Synchronisation des commandes
-    var ordersService = serviceProvider.GetService<OrdersSyncService>();
-    await ordersService.SyncAllOrdersAsync(token);
-}
-```
-
-### **Services/AuthenticationService.cs - Authentification OAuth2**
-
-**📄 Méthodes d'authentification :**
-
-```csharp
-public class AuthenticationService
-{
-    public async Task<string> GetAccessTokenAsync()
-    {
-        // Authentification OAuth2 avec Azure AD
-        // Gestion du refresh token
-        // Validation des paramètres de configuration
-    }
-
-    public bool ValidateConfiguration()
-    {
-        // Validation des paramètres TenantId, ClientId, ClientSecret
-        // Vérification de la configuration Azure
-    }
-}
-```
-
-### **Services/ArticlesSyncService.cs - Synchronisation articles**
-
-**📄 Logique de synchronisation intelligente :**
-
-```csharp
-public class ArticlesSyncService
-{
-    public async Task<SyncResult> SyncArticlesAsync(string token)
-    {
-        // 1. Récupération depuis l'API Dynamics
-        var apiArticles = await FetchArticlesFromApiAsync(token);
-
-        // 2. Calcul des hash de contenu
-        var articlesWithHashes = ComputeContentHashes(apiArticles);
-
-        // 3. Synchronisation intelligente avec la base
-        return await SyncWithDatabaseAsync(articlesWithHashes);
-    }
-
-    private async Task<SyncResult> SyncWithDatabaseAsync(List<ArticleWithHash> articles)
-    {
-        // Récupération des hash existants
-        // Détection des nouveaux articles
-        // Détection des modifications
-        // Mise à jour en base avec statistiques
-    }
-}
-```
-
-### **Services/OrdersSyncService.cs - Synchronisation commandes**
-
-**📄 Gestion des commandes multi-lignes :**
-
-```csharp
-public class OrdersSyncService
-{
-    public async Task SyncAllOrdersAsync(string token)
-    {
-        var orderEndpoints = GetOrderEndpoints();
-
-        foreach (var endpoint in orderEndpoints)
-        {
-            await SyncSingleOrderTypeAsync(token, endpoint);
-        }
-    }
-
-    private List<OrderEndpoint> GetOrderEndpoints()
-    {
-        return new List<OrderEndpoint>
-        {
-            new OrderEndpoint
-            {
-                Name = "ReturnOrders",
-                Endpoint = "data/BRINT32ReturnOrderTables",
-                TableName = "return_orders_raw",
-                PrimaryKeyField = "ReturnItemNum",
-                LineNumberField = "LineNum",
-                DisplayName = "Commandes de Retour"
-            },
-            new OrderEndpoint
-            {
-                Name = "PurchOrders",
-                Endpoint = "data/BRINT32PurchOrderTables",
-                TableName = "purch_orders_raw",
-                PrimaryKeyField = "PurchId",
-                LineNumberField = "LineNumber",
-                DisplayName = "Commandes d'Achat"
-            }
-        };
-    }
-}
-```
-
-### **Services/DatabaseService.cs - Gestion base de données**
-
-**📄 Méthodes de synchronisation :**
-
-```csharp
-public class DatabaseService
-{
-    public async Task<SyncResult> SyncArticlesWithDatabaseAsync(List<ArticleWithHash> articles)
-    {
-        // Synchronisation intelligente avec détection des modifications
-        // Gestion des nouveaux articles
-        // Mise à jour des articles existants
-        // Statistiques de synchronisation
-    }
-
-    public async Task<OrderSyncResult> SyncOrderLinesWithDatabaseAsync(JsonElement[] orderLines, OrderEndpoint config)
-    {
-        // Gestion des ID composites (PrimaryKey + LineNumber)
-        // Détection des lignes supprimées
-        // Synchronisation des lignes multiples
-        // Suivi des modifications par ligne
-    }
-}
-```
-
-### **Models/DynamicsModels.cs - Classes de données**
-
-**📄 Modèles de données :**
-
-```csharp
-public class TokenResponse
-{
-    public string access_token { get; set; }
-    public string token_type { get; set; }
-    public string expires_in { get; set; }
-}
-
-public class SyncResult
-{
-    public int TotalProcessed { get; set; }
-    public int NewArticles { get; set; }
-    public int UpdatedArticles { get; set; }
-    public int UnchangedArticles { get; set; }
-    public int ErrorCount { get; set; }
-}
-
-public class OrderEndpoint
-{
-    public string Name { get; set; }
-    public string Endpoint { get; set; }
-    public string TableName { get; set; }
-    public string PrimaryKeyField { get; set; }
-    public string LineNumberField { get; set; }
-    public string DisplayName { get; set; }
-}
-```
-
-## 📋 Fonctionnalités Avancées
+## 🔧 Fonctionnalités Principales
 
 ### **1. Synchronisation Intelligente**
 
-- **Détection des modifications** par hash SHA256
-- **Évitement des doublons** avec identifiants uniques
-- **Gestion des suppressions** pour les commandes
-- **Statistiques détaillées** de chaque synchronisation
+**📄 Fichier principal :** `Services/DynamicsDataService.cs`
 
-### **2. Gestion des Erreurs**
+- **Détection des modifications** par hash MD5
+- **Évitement des doublons** avec clés métier uniques
+- **Gestion des suppressions** (statut DELETED)
+- **Optimisation des confirmations** (évite les doublons)
 
-- **Logs détaillés** dans la table `sync_logs`
-- **Retry automatique** en cas d'erreur réseau
-- **Validation des données** avant insertion
-- **Rapports d'erreur** avec contexte
+**Endpoints synchronisés :**
 
-### **3. Performance**
+- `data/BRINT34ReleasedProducts` → Articles
+- `data/BRINT32PurchOrderTables` → Commandes d'achat
+- `data/BRINT32ReturnOrderTables` → Commandes de retour
+- `data/BRINT32TransferOrderTables` → Ordres de transfert
+- `data/BRPackingSlipInterfaces` → Commandes de vente
 
-- **Traitement par batch** pour les gros volumes
-- **Index optimisés** sur les champs de recherche
-- **Requêtes préparées** pour la sécurité
-- **Gestion mémoire** optimisée
+### **2. Confirmations Automatiques**
 
-### **4. Monitoring**
+**📄 Fichier principal :** `Services/StatusConfirmationService.cs`
 
-- **Suivi en temps réel** des synchronisations
-- **Historique complet** des opérations
-- **Métriques de performance** (temps d'exécution)
-- **Alertes** en cas d'anomalie
+**Articles :**
 
-## 📊 Utilisation et Résultats
+- Confirmation de réception avec statut **"ProcessedBy3PL"**
+- Évite les confirmations en double (optimisation)
+- Traçabilité complète dans **JSON_OUT**
 
-### **Résultats de synchronisation affichés :**
+**Commandes :**
+
+- **Purchase Orders** : Service `updatePurchOrderStatus` (statut = 2)
+- **Return Orders** : Service `updateReturnOrderStatus` (statut = 2)
+- **Transfer Orders** : Service `updateTransferOrderStatus` (statut = 2)
+- **Sales Orders** : PATCH sur `BRPackingSlipInterfaces` avec **"ProcessedBy3PL"**
+- **Mise à jour INT3PLStatus** pour la ligne 1 de chaque commande
+
+### **3. Traçabilité Complète**
+
+**📄 Fichier principal :** `Services/JsonOutService.cs`
+
+- **Enregistrement automatique** de tous les appels API
+- **Troncature intelligente** pour éviter les erreurs de taille
+- **Suivi des succès/échecs** avec codes HTTP
+- **Statistiques** et **nettoyage automatique**
+
+### **4. Utilitaires Simplifiés**
+
+**📄 Fichiers utilitaires :**
+
+**`Utilities/ConfirmationHelper.cs` :**
+
+```csharp
+// Confirmer un article
+await ConfirmationHelper.ConfirmSingleItemAsync(serviceProvider, "ARTICLE001");
+
+// Confirmer une commande
+await ConfirmationHelper.ConfirmPurchaseOrderAsync(serviceProvider, "PO-2024-001");
+
+// Confirmer toutes les commandes actives
+var results = await ConfirmationHelper.ConfirmAllActiveOrdersWithReportAsync(serviceProvider);
+```
+
+**`Utilities/StatusHelper.cs` :**
+
+```csharp
+// Marquer un article comme récupéré
+await StatusHelper.MarkArticleAsRetrievedAsync(serviceProvider, "ARTICLE001");
+
+// Marquer plusieurs articles
+await StatusHelper.MarkMultipleArticlesAsRetrievedAsync(serviceProvider, listArticles);
+```
+
+## 📊 Résultats de Synchronisation
+
+### **Exemple de sortie console :**
 
 ```
-=== API_BIOR - Synchronisation Dynamics 365 ===
-🔐 Authentification en cours...
-✅ Token obtenu avec succès
+=== API_BIOR - Synchronisation Dynamics 365 vers SQL Server ===
+Version SQL Server avec confirmations commandes - Table JSON_IN
+Base de données: 7.2.160.173 - Middleware
+🔄 NOUVEAU: Confirmations automatiques Purchase/Return/Transfer/Sales Orders
 
-📦 SYNCHRONISATION DES ARTICLES
-🔄 Récupération depuis l'API Dynamics...
-✅ 1,245 articles récupérés
-🔄 Synchronisation intelligente...
-✅ Synchronisation terminée
+✅ Authentification Azure réussie
 
-📋 RÉSULTAT DE LA SYNCHRONISATION DES ARTICLES:
-✓ Articles traités: 1,245
-  - Nouveaux articles ajoutés: 15
-  - Articles mis à jour: 23
-  - Articles inchangés: 1,207
-  - Erreurs: 0
+📈 === STATISTIQUES ACTUELLES === 📈
+📦 Total enregistrements: 15,234
+✅ Enregistrements actifs: 14,891
+🗑️ Enregistrements supprimés: 343
+📤 Articles confirmés: 12,456 (83.6%)
 
-🚚 SYNCHRONISATION DES COMMANDES
-📦 Synchronisation des Commandes de Retour...
-✅ 156 lignes traitées
-📦 Synchronisation des Commandes d'Achat...
-✅ 892 lignes traitées
+🚀 === DÉBUT SYNCHRONISATION AVEC CONFIRMATIONS === 🚀
+
+✅ Articles: 234 nouveaux, 45 modifiés, 1,156 inchangés (12.3s)
+✅ PurchaseOrders: 12 nouveaux, 3 modifiés, 89 inchangés (8.7s)
+✅ ReturnOrders: 5 nouveaux, 1 modifiés, 23 inchangés (4.2s)
+✅ TransferOrders: 8 nouveaux, 2 modifiés, 45 inchangés (6.1s)
+✅ SalesOrders: 67 nouveaux, 12 modifiés, 234 inchangés (15.4s)
+
+🔄 === CONFIRMATION COMMANDES EN ATTENTE === 🔄
+✅ Purchase Orders: 12 confirmées
+✅ Return Orders: 5 confirmées
+✅ Transfer Orders: 8 confirmées
+✅ Sales Orders: 67 confirmées
+🎯 Total confirmations: 92 commandes
+
+🔄 === LANCEMENT DU TRANSLATOR === 🔄
+🚀 Lancement de DynamicsToXmlTranslator...
+✅ DynamicsToXmlTranslator exécuté avec succès
+
+⏱️ Durée totale: 3.2 minutes
+✅ === SYNCHRONISATION AVEC CONFIRMATIONS TERMINÉE === ✅
 ```
 
 ### **Requêtes de monitoring utiles :**
 
 ```sql
 -- Dernière synchronisation
-SELECT
-    sync_type,
-    status,
-    total_articles_processed,
-    sync_date,
-    execution_time_ms / 1000 as duree_secondes
-FROM sync_logs
-ORDER BY sync_date DESC
-LIMIT 10;
+SELECT TOP 10
+    JSON_FROM,
+    COUNT(*) as nb_enregistrements,
+    MAX(JSON_CRDA) as derniere_sync,
+    SUM(CASE WHEN JSON_SENT = 1 THEN 1 ELSE 0 END) as confirmes
+FROM JSON_IN
+WHERE JSON_STAT = 'ACTIVE'
+GROUP BY JSON_FROM
+ORDER BY derniere_sync DESC;
 
--- Articles modifiés aujourd'hui
-SELECT COUNT(*) as articles_modifies_aujourd_hui
-FROM articles_raw
-WHERE DATE(last_updated_at) = CURDATE();
+-- Articles confirmés aujourd'hui
+SELECT COUNT(*) as articles_confirmes_aujourdhui
+FROM JSON_IN
+WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+AND JSON_SENT = 1
+AND CAST(JSON_CRDA AS DATE) = CAST(GETDATE() AS DATE);
 
--- Commandes par type
+-- Traçabilité JSON_OUT dernières 24h
 SELECT
-    'Commandes Retour' as type,
-    COUNT(*) as total_lignes
-FROM return_orders_raw
-UNION ALL
-SELECT
-    'Commandes Achat' as type,
-    COUNT(*) as total_lignes
-FROM purch_orders_raw;
+    JSON_DEST,
+    COUNT(*) as nb_envois,
+    AVG(CASE WHEN JSON_TREN LIKE '%SUCCESS%' THEN 100.0 ELSE 0.0 END) as taux_succes
+FROM JSON_OUT
+WHERE JSON_CRDA >= DATEADD(hour, -24, GETDATE())
+GROUP BY JSON_DEST
+ORDER BY nb_envois DESC;
 
--- Évolution par jour (7 derniers jours)
-SELECT
-    DATE(sync_date) as date_sync,
-    sync_type,
-    SUM(new_articles) as nouveaux,
-    SUM(updated_articles) as modifies,
-    AVG(execution_time_ms / 1000) as duree_moyenne_sec
-FROM sync_logs
-WHERE sync_date >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-GROUP BY DATE(sync_date), sync_type
-ORDER BY date_sync DESC;
+-- Commandes en attente de confirmation
+SELECT DISTINCT
+    JSON_FROM,
+    COUNT(*) as commandes_actives
+FROM JSON_IN
+WHERE JSON_STAT = 'ACTIVE'
+AND JSON_FROM LIKE '%Order%'
+GROUP BY JSON_FROM;
 ```
 
 ## 🐛 Résolution de Problèmes
 
-### **Erreur d'authentification Azure**
+### **Erreur de connexion SQL Server**
 
 ```bash
-# Vérifier la configuration
-cat appsettings.json
+# Vérifier la connexion
+sqlcmd -S 7.2.160.173 -d Middleware -U votre_user -P votre_mdp
 
-# Tester avec Postman
-POST https://login.microsoftonline.com/{TenantId}/oauth2/token
-Content-Type: application/x-www-form-urlencoded
-
-grant_type=client_credentials&client_id={ClientId}&client_secret={ClientSecret}&resource={ResourceUrl}
+# Test de connectivité réseau
+telnet 7.2.160.173 1433
 ```
 
 **Solutions courantes :**
 
-- Vérifier que le **Client Secret** n'a pas expiré
-- Contrôler les **permissions** de l'application Azure
-- Valider le **TenantId** et **ClientId**
+- Vérifier les **identifiants** SQL Server
+- Contrôler les **règles de firewall**
+- Valider que **TrustServerCertificate=True** est présent
 
-### **Erreur de connexion MySQL**
+### **Erreur "Column JSON_SENT doesn't exist"**
 
-```bash
-# Vérifier que MySQL fonctionne
-services.msc  # Windows
-sudo systemctl status mysql  # Linux
-
-# Tester la connexion
-mysql -u root -p -h localhost -P 3306
-```
-
-### **"Table doesn't exist"**
-
-L'outil recrée automatiquement toutes les tables. Si problème :
+L'outil ajoute automatiquement cette colonne. Si problème :
 
 ```sql
--- Supprimer complètement la base
-DROP DATABASE IF EXISTS dynamics_sync;
+-- Ajouter manuellement la colonne
+ALTER TABLE JSON_IN ADD JSON_SENT BIT DEFAULT 0 NOT NULL;
 
--- Relancer l'outil qui recrée tout
-dotnet run
+-- Créer l'index pour les performances
+CREATE NONCLUSTERED INDEX IX_JSON_IN_JSON_SENT
+ON JSON_IN (JSON_SENT, JSON_FROM, JSON_STAT);
 ```
 
-### **Données manquantes ou incorrectes**
+### **Confirmations qui échouent**
 
 ```sql
--- Consulter les logs d'erreur
-SELECT * FROM sync_logs
-WHERE status = 'ERROR'
-ORDER BY sync_date DESC
-LIMIT 10;
+-- Vérifier les envois récents
+SELECT TOP 20
+    JSON_DEST,
+    JSON_DATA,
+    JSON_TREN,
+    JSON_CRDA
+FROM JSON_OUT
+ORDER BY JSON_CRDA DESC;
 
--- Voir les détails d'erreur
+-- Statistiques des erreurs
 SELECT
-    sync_type,
-    error_message,
-    additional_info,
-    sync_date
-FROM sync_logs
-WHERE error_message IS NOT NULL;
+    JSON_DEST,
+    COUNT(*) as total_envois,
+    SUM(CASE WHEN JSON_TREN LIKE '%ERROR%' THEN 1 ELSE 0 END) as erreurs
+FROM JSON_OUT
+WHERE JSON_CRDA >= DATEADD(day, -1, GETDATE())
+GROUP BY JSON_DEST;
 ```
 
-### **Performance lente**
+### **DynamicsToXmlTranslator ne se lance pas**
 
-```sql
--- Vérifier la taille des tables
-SELECT
-    table_name,
-    ROUND(((data_length + index_length) / 1024 / 1024), 2) AS "Table Size (MB)"
-FROM information_schema.tables
-WHERE table_schema = 'dynamics_sync';
+Vérifier la configuration dans `appsettings.json` :
 
--- Optimiser les index
-ANALYZE TABLE articles_raw;
-ANALYZE TABLE return_orders_raw;
-ANALYZE TABLE purch_orders_raw;
+```json
+{
+  "ExternalPrograms": {
+    "TranslatorEnabled": true,
+    "TranslatorPath": "C:\\chemin\\correct\\vers\\DynamicsToXmlTranslator.exe",
+    "TimeoutMinutes": 10
+  }
+}
 ```
 
 ## 🔄 Automatisation et Planification
@@ -540,19 +396,12 @@ ANALYZE TABLE purch_orders_raw;
 ```batch
 @echo off
 cd /d "C:\chemin\vers\API_BioR"
-echo [%date% %time%] Début synchronisation >> sync_auto.log
+echo [%date% %time%] Début synchronisation SQL Server >> sync_auto.log
 dotnet run >> sync_auto.log 2>&1
 echo [%date% %time%] Fin synchronisation >> sync_auto.log
-```
 
-**📄 Fichier à créer :** `sync_auto.sh` (Linux)
-
-```bash
-#!/bin/bash
-cd /chemin/vers/API_BioR
-echo "[$(date)] Début synchronisation" >> sync_auto.log
-dotnet run >> sync_auto.log 2>&1
-echo "[$(date)] Fin synchronisation" >> sync_auto.log
+REM Archiver les logs de plus de 30 jours
+forfiles /p "." /m "sync_auto_*.log" /d -30 /c "cmd /c del @path"
 ```
 
 ### **Planification Windows (Tâches planifiées)**
@@ -562,242 +411,231 @@ echo "[$(date)] Fin synchronisation" >> sync_auto.log
 taskschd.msc
 
 # Créer une nouvelle tâche :
-# - Nom : "Sync Dynamics API_BioR"
+# - Nom : "API_BioR Sync SQL Server"
 # - Déclencheur : Quotidien à 06:00
 # - Action : Démarrer un programme
 # - Programme : C:\chemin\vers\API_BioR\sync_auto.bat
+# - Conditions : Démarrer uniquement si l'ordinateur est connecté au réseau
 ```
 
-### **Planification Linux (Cron)**
+### **Monitoring automatique avec alertes**
 
-```bash
-# Éditer le crontab
-crontab -e
-
-# Ajouter la ligne pour exécution quotidienne à 6h
-0 6 * * * /chemin/vers/API_BioR/sync_auto.sh
-
-# Vérifier la planification
-crontab -l
-```
-
-## 📈 Monitoring et Maintenance
-
-### **Surveillance quotidienne**
+**📄 Fichier à créer :** `check_sync_health.sql`
 
 ```sql
--- Dashboard de monitoring quotidien
-SELECT
-    'Dernière sync Articles' as indicateur,
-    CONCAT(
-        TIMESTAMPDIFF(HOUR, MAX(sync_date), NOW()), 'h ',
-        TIMESTAMPDIFF(MINUTE, MAX(sync_date), NOW()) % 60, 'm'
-    ) as valeur
-FROM sync_logs
-WHERE sync_type = 'Articles'
-UNION ALL
-SELECT
-    'Articles traités hier' as indicateur,
-    COALESCE(SUM(total_articles_processed), 0) as valeur
-FROM sync_logs
-WHERE sync_type = 'Articles'
-AND DATE(sync_date) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
-UNION ALL
-SELECT
-    'Erreurs dernières 24h' as indicateur,
-    COUNT(*) as valeur
-FROM sync_logs
-WHERE status = 'ERROR'
-AND sync_date >= DATE_SUB(NOW(), INTERVAL 24 HOUR);
-```
+-- Script de monitoring à exécuter périodiquement
+DECLARE @LastSyncMinutes INT
+DECLARE @ErrorCount INT
+DECLARE @AlertMessage NVARCHAR(500)
 
-### **Nettoyage automatique**
+-- Vérifier la dernière synchronisation
+SELECT @LastSyncMinutes = DATEDIFF(MINUTE, MAX(JSON_CRDA), GETDATE())
+FROM JSON_IN
+WHERE JSON_FROM = 'data/BRINT34ReleasedProducts';
 
-```sql
--- Script de maintenance hebdomadaire
--- Supprimer les logs de plus de 3 mois
-DELETE FROM sync_logs
-WHERE sync_date < DATE_SUB(NOW(), INTERVAL 3 MONTH);
+-- Compter les erreurs récentes
+SELECT @ErrorCount = COUNT(*)
+FROM JSON_OUT
+WHERE JSON_CRDA >= DATEADD(hour, -1, GETDATE())
+AND JSON_TREN LIKE '%ERROR%';
 
--- Optimiser les tables
-OPTIMIZE TABLE articles_raw;
-OPTIMIZE TABLE return_orders_raw;
-OPTIMIZE TABLE purch_orders_raw;
-OPTIMIZE TABLE sync_logs;
-```
+-- Générer des alertes
+IF @LastSyncMinutes > 90  -- Plus de 1h30 sans sync
+    SET @AlertMessage = 'ALERTE: Dernière sync il y a ' + CAST(@LastSyncMinutes AS NVARCHAR(10)) + ' minutes';
 
-### **Alertes par email (optionnelles)**
+IF @ErrorCount > 10       -- Plus de 10 erreurs/heure
+    SET @AlertMessage = COALESCE(@AlertMessage + ' | ', '') + 'ALERTE: ' + CAST(@ErrorCount AS NVARCHAR(10)) + ' erreurs dernière heure';
 
-**📄 Fichier à créer :** `check_sync.py`
-
-```python
-import mysql.connector
-import smtplib
-from datetime import datetime, timedelta
-
-def check_last_sync():
-    conn = mysql.connector.connect(
-        host='localhost',
-        database='dynamics_sync',
-        user='root',
-        password='VOTRE_MDP'
-    )
-
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT MAX(sync_date)
-        FROM sync_logs
-        WHERE status = 'SUCCESS'
-    """)
-
-    last_sync = cursor.fetchone()[0]
-    if last_sync < datetime.now() - timedelta(hours=25):
-        send_alert("Sync API_BioR en retard !")
-
-    conn.close()
-
-def send_alert(message):
-    # Configuration email
-    smtp_server = "smtp.office365.com"
-    sender_email = "votre-email@eurodislog.com"
-    # ... code d'envoi email
+-- Afficher ou envoyer l'alerte
+IF @AlertMessage IS NOT NULL
+    PRINT @AlertMessage;
+ELSE
+    PRINT 'Système API_BioR fonctionnel';
 ```
 
 ## 🛠️ Développement et Extension
 
-### **Ajouter un nouvel endpoint de commandes**
+### **Ajouter un nouvel endpoint**
 
-**1. Dans OrdersSyncService.cs, méthode GetOrderEndpoints() :**
+**📄 Fichier à modifier :** `Services/DynamicsDataService.cs`
+
+Dans la méthode `GetConfiguredEndpoints()` :
 
 ```csharp
-new OrderEndpoint
+new EndpointConfig
 {
-    Name = "TransferOrders",
-    Endpoint = "data/BRINT32TransferOrderTables",
-    TableName = "transfer_orders_raw",
-    PrimaryKeyField = "TransferId",
-    LineNumberField = "LineNumber",
-    DisplayName = "Ordres de Transfert"
+    Name = "InventoryJournals",
+    Path = "data/BRInventoryJournalTables",
+    PrimaryKeyField = "JournalId",
+    DisplayName = "Journaux d'inventaire"
 }
 ```
 
-**2. L'outil créera automatiquement :**
+L'outil synchronisera automatiquement ce nouvel endpoint vers **JSON_IN**.
 
-- La table `transfer_orders_raw`
-- Les index optimisés
-- La logique de synchronisation
+### **Ajouter une nouvelle confirmation**
 
-### **Modifier la structure des données**
-
-**Pour ajouter des champs calculés :**
-
-```sql
--- Exemple : ajouter un champ calculé pour les articles
-ALTER TABLE articles_raw
-ADD COLUMN category VARCHAR(100)
-GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(json_data, '$.Category'))) STORED;
-
--- Créer un index pour les performances
-CREATE INDEX idx_category ON articles_raw(category);
-```
-
-### **Personnaliser la logique de synchronisation**
-
-**Fichiers à modifier :**
-
-- `Services/ArticlesSyncService.cs` : pour les articles
-- `Services/OrdersSyncService.cs` : pour les commandes
-- `Services/DatabaseService.cs` : pour la logique base de données
-
-### **Ajouter des notifications**
+**📄 Fichier à modifier :** `Services/StatusConfirmationService.cs`
 
 ```csharp
-// Dans Program.cs, après chaque synchronisation
-public static async Task SendSlackNotification(SyncResult result)
+public async Task<bool> ConfirmInventoryJournalAsync(string token, string journalId)
 {
-    var webhook = "https://hooks.slack.com/services/...";
-    var message = $"✅ Sync terminée: {result.NewArticles} nouveaux, {result.UpdatedArticles} modifiés";
-
-    using var client = new HttpClient();
-    await client.PostAsync(webhook, new StringContent(
-        JsonSerializer.Serialize(new { text = message })
-    ));
+    // Logique de confirmation spécifique
+    var endpoint = $"{_baseUrl}/api/services/MonService/confirmInventory";
+    // ... reste de l'implémentation
 }
 ```
 
-## 📊 Données Stockées
+### **Personnaliser les helpers**
 
-### **Format des données JSON stockées**
+**📄 Fichier à créer :** `Utilities/CustomHelper.cs`
 
-**Articles (table articles_raw) :**
+```csharp
+public static class CustomHelper
+{
+    public static async Task<bool> ProcessSpecificWorkflowAsync(IServiceProvider serviceProvider, string workflowId)
+    {
+        // Logique métier spécifique
+        var confirmationService = serviceProvider.GetRequiredService<StatusConfirmationService>();
+        // ... implémentation personnalisée
+    }
+}
+```
+
+## 📈 Données et Statistiques
+
+### **Exemples de données JSON stockées**
+
+**Articles (JSON_FROM = 'data/BRINT34ReleasedProducts') :**
 
 ```json
 {
   "ItemId": "SHSEBO500",
   "Name": "SHAMPOING SEBORREGULATRICE 500ML",
-  "Category": "CAPILLAIRE",
-  "ExternalItemId": "",
-  "GrossWeight": 0.6,
-  "Weight": 0.5,
-  "Height": 20.5,
-  "Width": 6.8,
-  "Depth": 6.8,
+  "INT3PLStatus": "ProcessedBy3PL",
   "itemBarCode": "3401360016484",
-  "ItemGroupId": "SHAMPOOING",
-  "UnitId": "ML",
-  "INT3PLStatus": "Active",
-  "TrackingLot1": 0,
-  "TrackingLot2": 0,
-  "PdsShelfLife": 1095,
-  "OrigCountryRegionId": "FR",
-  "dataAreaId": "BRE"
+  "dataAreaId": "BR"
 }
 ```
 
-**Commandes (tables \*\_orders_raw) :**
+**Sales Orders (JSON_FROM = 'data/BRPackingSlipInterfaces') :**
 
 ```json
 {
-  "ReturnItemNum": "RET-2024-001",
-  "LineNum": 1.0,
-  "ItemId": "SHSEBO500",
-  "OrderedReturnQuantity": 12.0,
-  "ReturnUnitPrice": 8.5,
-  "CurrencyCode": "EUR",
-  "DeliveryDate": "2024-12-15T00:00:00Z",
-  "dataAreaId": "BRE"
+  "transRefId": "SO001824",
+  "BRPortalOrderNumber": "WEB-001234",
+  "WMSTRansRecId": 5637160326,
+  "itemId": "STILL",
+  "qty": 1.0,
+  "INT3PLStatus": "ProcessedBy3PL",
+  "expeditionStatus": "Activated"
 }
 ```
 
-## 📞 Support et Contact
-
-### **Logs à consulter en cas de problème :**
-
-1. **Console** : Messages temps réel
-2. **Table sync_logs** : Historique complet des synchronisations
-3. **Logs système** : Erreurs .NET dans Windows Event Viewer
-
-### **Informations à fournir pour le support :**
-
-- Version de .NET utilisée
-- Configuration MySQL (version, paramètres)
-- Contenu de `appsettings.json` (sans les secrets)
-- Derniers logs d'erreur de la table `sync_logs`
-- Taille actuelle des tables de données
-
-### **Vérification de santé rapide :**
+### **Statistiques en temps réel**
 
 ```sql
--- Script de diagnostic complet
-SELECT 'Articles total' as metric, COUNT(*) as value FROM articles_raw
+-- Dashboard complet
+SELECT 'Stat' as Métrique, 'Valeur' as Donnée
 UNION ALL
-SELECT 'Dernière sync articles', TIMESTAMPDIFF(MINUTE, MAX(last_updated_at), NOW()) FROM articles_raw
+SELECT 'Total JSON_IN', CAST(COUNT(*) AS NVARCHAR(20))
+FROM JSON_IN
 UNION ALL
-SELECT 'Commandes retour', COUNT(*) FROM return_orders_raw
+SELECT 'Articles actifs', CAST(COUNT(*) AS NVARCHAR(20))
+FROM JSON_IN
+WHERE JSON_FROM = 'data/BRINT34ReleasedProducts' AND JSON_STAT = 'ACTIVE'
 UNION ALL
-SELECT 'Commandes achat', COUNT(*) FROM purch_orders_raw
+SELECT 'Articles confirmés', CAST(COUNT(*) AS NVARCHAR(20))
+FROM JSON_IN
+WHERE JSON_FROM = 'data/BRINT34ReleasedProducts' AND JSON_SENT = 1
 UNION ALL
-SELECT 'Erreurs 24h', COUNT(*) FROM sync_logs WHERE status='ERROR' AND sync_date >= DATE_SUB(NOW(), INTERVAL 24 HOUR);
+SELECT 'Envois JSON_OUT 24h', CAST(COUNT(*) AS NVARCHAR(20))
+FROM JSON_OUT
+WHERE JSON_CRDA >= DATEADD(hour, -24, GETDATE())
+UNION ALL
+SELECT 'Commandes sync 24h', CAST(COUNT(DISTINCT JSON_FROM) AS NVARCHAR(20))
+FROM JSON_IN
+WHERE JSON_CRDA >= DATEADD(hour, -24, GETDATE())
+AND JSON_FROM LIKE '%Order%';
+```
+
+## 📞 Support et Maintenance
+
+### **Logs à consulter :**
+
+1. **Console** : Messages temps réel
+2. **JSON_OUT** : Historique des appels API
+3. **sync_auto.log** : Logs des exécutions automatiques
+4. **Logs Windows** : Erreurs système
+
+### **Nettoyage automatique recommandé :**
+
+```sql
+-- Script de maintenance mensuel
+-- Nettoyer les anciens logs JSON_OUT (garder 3 mois)
+DELETE FROM JSON_OUT
+WHERE JSON_CRDA < DATEADD(month, -3, GETDATE());
+
+-- Nettoyer les anciens DELETED de JSON_IN (garder 1 mois)
+DELETE FROM JSON_IN
+WHERE JSON_STAT = 'DELETED'
+AND JSON_CRDA < DATEADD(month, -1, GETDATE());
+
+-- Reconstruire les index pour optimiser les performances
+ALTER INDEX ALL ON JSON_IN REBUILD;
+ALTER INDEX ALL ON JSON_OUT REBUILD;
+```
+
+### **Vérification de santé quotidienne :**
+
+```sql
+-- Health check complet
+WITH HealthStats AS (
+    SELECT
+        'Dernière sync articles (minutes)' as Check_Name,
+        CAST(DATEDIFF(MINUTE, MAX(JSON_CRDA), GETDATE()) AS NVARCHAR(20)) as Check_Value,
+        CASE WHEN DATEDIFF(MINUTE, MAX(JSON_CRDA), GETDATE()) > 90 THEN 'KO' ELSE 'OK' END as Status
+    FROM JSON_IN
+    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+
+    UNION ALL
+
+    SELECT
+        'Erreurs dernières 24h',
+        CAST(COUNT(*) AS NVARCHAR(20)),
+        CASE WHEN COUNT(*) > 50 THEN 'KO' ELSE 'OK' END
+    FROM JSON_OUT
+    WHERE JSON_CRDA >= DATEADD(hour, -24, GETDATE())
+    AND JSON_TREN LIKE '%ERROR%'
+
+    UNION ALL
+
+    SELECT
+        'Taux confirmation articles (%)',
+        CAST(ROUND(100.0 * SUM(CASE WHEN JSON_SENT = 1 THEN 1.0 ELSE 0.0 END) / COUNT(*), 1) AS NVARCHAR(20)),
+        CASE WHEN 100.0 * SUM(CASE WHEN JSON_SENT = 1 THEN 1.0 ELSE 0.0 END) / COUNT(*) < 80 THEN 'KO' ELSE 'OK' END
+    FROM JSON_IN
+    WHERE JSON_FROM = 'data/BRINT34ReleasedProducts' AND JSON_STAT = 'ACTIVE'
+)
+SELECT
+    Check_Name,
+    Check_Value,
+    CASE Status
+        WHEN 'OK' THEN '✅ ' + Status
+        ELSE '❌ ' + Status
+    END as Status
+FROM HealthStats;
 ```
 
 ---
+
+## 🎯 Points Clés
+
+- **Base de données** : SQL Server Middleware (7.2.160.173)
+- **Table principale** : **JSON_IN** avec colonne **JSON_SENT**
+- **Traçabilité** : **JSON_OUT** pour tous les appels API
+- **Confirmations automatiques** : Articles + 4 types de commandes
+- **Performance** : Optimisation anti-doublons et synchronisation intelligente
+- **Maintenance** : Scripts de nettoyage et monitoring intégrés
+
+**🚀 Version opérationnelle pour environnement de production BioRécup/Eurodislog !**
