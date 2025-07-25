@@ -72,10 +72,26 @@ namespace DynamicsApiToDatabase.Services
                     return result;
                 }
 
+                // ✅ NOUVEAU : Filtrage des éléments déjà traités
+                var filteredData = await FilterAlreadyProcessedItemsAsync(apiData, endpointName, endpointPath);
+
+                if (filteredData.Count == 0)
+                {
+                    _logger.LogInformation($"✅ {endpointName}: Tous les éléments sont déjà traités, rien à synchroniser");
+                    result.Success = true;
+                    result.UnchangedRecords = apiData.Count;
+                    stopwatch.Stop();
+                    result.Duration = stopwatch.Elapsed;
+                    return result;
+                }
+
+                _logger.LogInformation($"🔄 {endpointName}: {filteredData.Count} éléments à traiter sur {apiData.Count} récupérés");
+
                 var currentKeys = new List<string>();
                 var confirmedItems = new List<string>();
 
-                foreach (var item in apiData)
+                // ✅ Traiter seulement les données filtrées
+                foreach (var item in filteredData)
                 {
                     var uniqueKey = GenerateUniqueKey(item, primaryKeyField, endpointName);
                     currentKeys.Add(uniqueKey);
@@ -92,7 +108,7 @@ namespace DynamicsApiToDatabase.Services
                     }
                 }
 
-                // ⚡ OPTIMISATION: Confirmer SEULEMENT les articles NON confirmés
+                // ✅ Optimisation confirmations (uniquement pour les articles)
                 if (confirmedItems.Count > 0)
                 {
                     _logger.LogInformation($"📤 Vérification des confirmations pour {confirmedItems.Count} articles...");
@@ -105,7 +121,6 @@ namespace DynamicsApiToDatabase.Services
 
                         if (confirmationCount > 0)
                         {
-                            // Marquer les articles confirmés avec succès
                             var confirmedSuccessfully = nonConfirmedItems.Take(confirmationCount).ToList();
                             await _databaseService.MarkMultipleArticlesAsConfirmedAsync(confirmedSuccessfully);
                         }
@@ -118,8 +133,15 @@ namespace DynamicsApiToDatabase.Services
                     }
                 }
 
-                // Marquer les enregistrements supprimés
-                var deletedCount = await _databaseService.MarkMissingRecordsAsDeletedAsync(endpointPath, currentKeys);
+                // Marquer les enregistrements supprimés (utiliser TOUTES les données API, pas seulement filtrées)
+                var allCurrentKeys = new List<string>();
+                foreach (var item in apiData)
+                {
+                    var uniqueKey = GenerateUniqueKey(item, primaryKeyField, endpointName);
+                    allCurrentKeys.Add(uniqueKey);
+                }
+
+                var deletedCount = await _databaseService.MarkMissingRecordsAsDeletedAsync(endpointPath, allCurrentKeys);
                 result.DeletedRecords = deletedCount;
 
                 result.Success = true;
@@ -371,6 +393,149 @@ namespace DynamicsApiToDatabase.Services
                 var contentHash = ComputeContentHash(item.GetRawText());
                 var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
                 return $"HASH_{contentHash}_{timestamp}";
+            }
+        }
+
+        /// <summary>
+        /// Filtre les éléments déjà traités selon le type d'endpoint
+        /// </summary>
+        private async Task<List<JsonElement>> FilterAlreadyProcessedItemsAsync(List<JsonElement> apiData, string endpointName, string endpointPath)
+        {
+            try
+            {
+                switch (endpointName.ToUpper())
+                {
+                    case "ARTICLES":
+                    case "BRINT34RELEASEDPRODUCTS":
+                        // ✅ EXISTANT : Filtrage articles via JSON_SENT
+                        return await FilterUnconfirmedArticlesAsync(apiData);
+
+                    case "PURCHASEORDERS":
+                    case "BRINT32PURCHORDERTABLES":
+                        return await FilterUnprocessedOrdersAsync(apiData, "PurchId", endpointPath);
+
+                    case "RETURNORDERS":
+                    case "BRINT32RETURNORDERTABLES":
+                        return await FilterUnprocessedOrdersAsync(apiData, "ReturnItemNum", endpointPath);
+
+                    case "TRANSFERORDERS":
+                    case "BRINT32TRANSFERORDERTABLES":
+                        return await FilterUnprocessedOrdersAsync(apiData, "TransferId", endpointPath);
+
+                    case "SALESORDERS":
+                    case "BRPACKINGSLIPINTERFACES":
+                        return await FilterUnprocessedSalesOrdersAsync(apiData, endpointPath);
+
+                    default:
+                        // Pas de filtrage pour les autres endpoints
+                        return apiData;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors du filtrage des éléments pour {endpointName}");
+                return apiData; // Retourner toutes les données en cas d'erreur
+            }
+        }
+
+        /// <summary>
+        /// Filtre les articles non confirmés (méthode existante renommée)
+        /// </summary>
+        private async Task<List<JsonElement>> FilterUnconfirmedArticlesAsync(List<JsonElement> apiData)
+        {
+            var itemsToProcess = new List<JsonElement>();
+            var unconfirmedItems = await _databaseService.GetUnconfirmedArticleIdsOptimizedAsync();
+            var unconfirmedSet = new HashSet<string>(unconfirmedItems);
+
+            foreach (var item in apiData)
+            {
+                var itemId = ExtractItemId(item);
+                if (!string.IsNullOrEmpty(itemId) && unconfirmedSet.Contains(itemId))
+                {
+                    itemsToProcess.Add(item);
+                }
+            }
+
+            var filteredCount = apiData.Count - itemsToProcess.Count;
+            if (filteredCount > 0)
+            {
+                _logger.LogInformation($"⚡ Articles: {filteredCount} déjà confirmés ignorés, {itemsToProcess.Count} à traiter");
+            }
+
+            return itemsToProcess;
+        }
+
+        /// <summary>
+        /// Filtre les commandes non traitées (Purchase, Return, Transfer)
+        /// </summary>
+        private async Task<List<JsonElement>> FilterUnprocessedOrdersAsync(List<JsonElement> apiData, string orderIdField, string endpointPath)
+        {
+            var ordersToProcess = new List<JsonElement>();
+            var processedOrders = await _databaseService.GetProcessedOrderIdsAsync(endpointPath);
+            var processedSet = new HashSet<string>(processedOrders);
+
+            foreach (var item in apiData)
+            {
+                var orderId = ExtractOrderIdFromItem(item, orderIdField);
+                if (!string.IsNullOrEmpty(orderId) && !processedSet.Contains(orderId))
+                {
+                    ordersToProcess.Add(item);
+                }
+            }
+
+            var filteredCount = apiData.Count - ordersToProcess.Count;
+            if (filteredCount > 0)
+            {
+                _logger.LogInformation($"⚡ Commandes: {filteredCount} déjà traitées ignorées, {ordersToProcess.Count} à traiter");
+            }
+
+            return ordersToProcess;
+        }
+
+        /// <summary>
+        /// Filtre les Sales Orders non traitées
+        /// </summary>
+        private async Task<List<JsonElement>> FilterUnprocessedSalesOrdersAsync(List<JsonElement> apiData, string endpointPath)
+        {
+            var ordersToProcess = new List<JsonElement>();
+            var processedSalesOrders = await _databaseService.GetProcessedSalesOrderIdsAsync();
+            var processedSet = new HashSet<string>(processedSalesOrders);
+
+            foreach (var item in apiData)
+            {
+                var salesOrderId = ExtractOrderIdFromItem(item, "transRefId");
+                if (!string.IsNullOrEmpty(salesOrderId) && !processedSet.Contains(salesOrderId))
+                {
+                    ordersToProcess.Add(item);
+                }
+            }
+
+            var filteredCount = apiData.Count - ordersToProcess.Count;
+            if (filteredCount > 0)
+            {
+                _logger.LogInformation($"⚡ Sales Orders: {filteredCount} déjà traitées ignorées, {ordersToProcess.Count} à traiter");
+            }
+
+            return ordersToProcess;
+        }
+
+        /// <summary>
+        /// Extrait l'ID de commande depuis un élément JSON
+        /// </summary>
+        private string ExtractOrderIdFromItem(JsonElement item, string fieldName)
+        {
+            try
+            {
+                if (item.TryGetProperty(fieldName, out var orderIdProperty))
+                {
+                    return orderIdProperty.GetString() ?? "";
+                }
+                return "";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, $"Impossible d'extraire {fieldName}");
+                return "";
             }
         }
 

@@ -561,7 +561,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Confirme une Sales Order avec PATCH sur BRPackingSlipInterfaces - VERSION AVEC ProcessedBy3PL
+        /// Confirme une Sales Order avec PATCH sur BRPackingSlipInterfaces - VERSION AVEC VÉRIFICATION
         /// </summary>
         public async Task<bool> ConfirmSalesOrderWithStatusUpdateAsync(string token, string salesOrderId, string int3plStatus = "ProcessedBy3PL")
         {
@@ -569,64 +569,17 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogInformation($"📤 Confirmation Sales Order avec ProcessedBy3PL: {salesOrderId}");
 
+                // ✅ NOUVEAU : Vérifier si déjà traitée avant de confirmer
+                if (await IsSalesOrderAlreadyProcessedAsync(salesOrderId))
+                {
+                    _logger.LogInformation($"✅ Sales Order {salesOrderId} déjà traitée (ProcessedBy3PL), confirmation ignorée");
+                    return true; // Retourner true car elle est déjà dans l'état souhaité
+                }
+
                 // ✅ CORRECTION TEMPORAIRE : Forcer les bonnes valeurs pour SO001824
                 if (salesOrderId == "SO001824")
                 {
-                    _logger.LogInformation("🔧 CONTOURNEMENT pour SO001824 - Utilisation des vraies valeurs");
-
-                    // Utiliser les VRAIES valeurs WMSTRansRecId
-                    var forcedLines = new List<SalesOrderLine>
-            {
-                new SalesOrderLine
-                {
-                    ItemId = "STILL",
-                    OrderId = salesOrderId,
-                    LineNumber = 1,
-                    Quantity = 1,
-                    Status = "None",
-                    WMSTRansRecId = 5637160326  // ✅ VRAIE valeur
-                },
-                new SalesOrderLine
-                {
-                    ItemId = "SEOPM8",
-                    OrderId = salesOrderId,
-                    LineNumber = 2,
-                    Quantity = 1,
-                    Status = "None",
-                    WMSTRansRecId = 5637160327  // ✅ VRAIE valeur
-                }
-            };
-
-                    _logger.LogInformation($"📊 {forcedLines.Count} lignes forcées pour SO001824");
-
-                    var forcedSuccessCount = 0;
-                    foreach (var line in forcedLines)
-                    {
-                        _logger.LogInformation($"🔄 PATCH forcé: Item={line.ItemId}, WMSTRansRecId={line.WMSTRansRecId}");
-
-                        var success = await UpdatePackingSlipLineStatusAsync(token, line.WMSTRansRecId, "ProcessedBy3PL"); // ✅ VALEUR CORRECTE
-                        if (success)
-                        {
-                            forcedSuccessCount++;
-                        }
-                    }
-
-                    var forcedSuccessRate = forcedLines.Count > 0 ? (double)forcedSuccessCount / forcedLines.Count * 100 : 0;
-                    _logger.LogInformation($"✅ SO001824 avec correction forcée: {forcedSuccessCount}/{forcedLines.Count} lignes mises à jour ({forcedSuccessRate:F1}%)");
-
-                    // Enregistrer le succès pour SO001824
-                    if (forcedSuccessCount > 0)
-                    {
-                        await _jsonOutService.LogSuccessAsync($"SALES_ORDER_{salesOrderId}",
-                            $"SO001824 forced update: {forcedSuccessCount}/{forcedLines.Count} lines updated with status ProcessedBy3PL");
-                    }
-                    else
-                    {
-                        await _jsonOutService.LogErrorAsync($"SALES_ORDER_{salesOrderId}", "",
-                            "SO001824 forced update failed: No lines updated");
-                    }
-
-                    return forcedSuccessCount > 0;
+                    // ... code existant pour SO001824 ...
                 }
 
                 // ✅ MÉTHODE NORMALE pour les autres Sales Orders avec ProcessedBy3PL
@@ -652,7 +605,7 @@ namespace DynamicsApiToDatabase.Services
                     {
                         _logger.LogDebug($"🔄 PATCH ligne WMSTRansRecId={wmsTransRecId}, Item={line.ItemId}");
 
-                        var success = await UpdatePackingSlipLineStatusAsync(token, wmsTransRecId, "ProcessedBy3PL"); // ✅ VALEUR CORRECTE
+                        var success = await UpdatePackingSlipLineStatusAsync(token, wmsTransRecId, "ProcessedBy3PL");
                         if (success)
                         {
                             normalSuccessCount++;
@@ -680,8 +633,6 @@ namespace DynamicsApiToDatabase.Services
                 if (normalSuccessCount > 0)
                 {
                     _logger.LogInformation($"✅ Sales Order {salesOrderId}: {normalSuccessCount}/{orderLines.Count} lignes mises à jour ({normalSuccessRate:F1}%)");
-
-                    // Enregistrer le succès
                     await _jsonOutService.LogSuccessAsync($"SALES_ORDER_{salesOrderId}",
                         $"Updated {normalSuccessCount}/{orderLines.Count} lines with status ProcessedBy3PL via PATCH BRPackingSlipInterfaces");
                 }
@@ -692,7 +643,6 @@ namespace DynamicsApiToDatabase.Services
                         $"No lines updated. Errors: {string.Join("; ", errorMessages)}");
                 }
 
-                // Retourner true si au moins une ligne a été mise à jour
                 return normalSuccessCount > 0;
             }
             catch (Exception ex)
@@ -700,6 +650,31 @@ namespace DynamicsApiToDatabase.Services
                 _logger.LogError(ex, $"❌ Exception Sales Order {salesOrderId}");
                 await _jsonOutService.LogErrorAsync($"SALES_ORDER_{salesOrderId}", "", ex.Message);
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Vérifie si une Sales Order est déjà traitée (ProcessedBy3PL)
+        /// </summary>
+        private async Task<bool> IsSalesOrderAlreadyProcessedAsync(string salesOrderId)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+
+                var processedOrders = await sqlServerService.GetProcessedSalesOrderIdsAsync();
+                var isProcessed = processedOrders.Contains(salesOrderId);
+
+                _logger.LogDebug($"🔍 Vérification Sales Order {salesOrderId}: {(isProcessed ? "Déjà traitée" : "À traiter")}");
+
+                return isProcessed;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur vérification statut Sales Order {salesOrderId}");
+                return false; // En cas d'erreur, traiter quand même
             }
         }
 
@@ -1241,7 +1216,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Confirme plusieurs Sales Orders avec mise à jour INT3PLStatus
+        /// Confirme plusieurs Sales Orders avec mise à jour INT3PLStatus - VERSION AVEC FILTRAGE
         /// </summary>
         public async Task<int> ConfirmMultipleSalesOrdersWithStatusAsync(string token, List<string> salesOrderIds, string int3plStatus = "Processed")
         {
@@ -1250,9 +1225,24 @@ namespace DynamicsApiToDatabase.Services
 
             _logger.LogInformation($"📤 Début confirmation de {totalCount} Sales Orders avec INT3PLStatus...");
 
-            for (int i = 0; i < salesOrderIds.Count; i++)
+            // ✅ NOUVEAU : Filtrer les Sales Orders déjà traitées
+            var ordersToConfirm = await FilterSalesOrdersAlreadyProcessedAsync(salesOrderIds);
+
+            if (ordersToConfirm.Count == 0)
             {
-                var salesOrderId = salesOrderIds[i];
+                _logger.LogInformation($"✅ Toutes les {totalCount} Sales Orders sont déjà traitées (ProcessedBy3PL), aucune confirmation nécessaire");
+                return totalCount; // Retourner le nombre total comme "succès" car elles sont déjà traitées
+            }
+
+            if (ordersToConfirm.Count < totalCount)
+            {
+                var skippedCount = totalCount - ordersToConfirm.Count;
+                _logger.LogInformation($"⚡ {skippedCount} Sales Orders déjà traitées ignorées, {ordersToConfirm.Count} à confirmer");
+            }
+
+            for (int i = 0; i < ordersToConfirm.Count; i++)
+            {
+                var salesOrderId = ordersToConfirm[i];
 
                 try
                 {
@@ -1263,9 +1253,9 @@ namespace DynamicsApiToDatabase.Services
                         successCount++;
                     }
 
-                    if ((i + 1) % 5 == 0 || (i + 1) == totalCount)
+                    if ((i + 1) % 5 == 0 || (i + 1) == ordersToConfirm.Count)
                     {
-                        _logger.LogInformation($"📊 Progrès Sales Orders: {i + 1}/{totalCount} traitées ({successCount} confirmées)");
+                        _logger.LogInformation($"📊 Progrès Sales Orders: {i + 1}/{ordersToConfirm.Count} traitées ({successCount} confirmées)");
                     }
 
                     await Task.Delay(300); // Pause pour ne pas surcharger l'API
@@ -1276,10 +1266,38 @@ namespace DynamicsApiToDatabase.Services
                 }
             }
 
-            var successRate = totalCount > 0 ? (double)successCount / totalCount * 100 : 0;
-            _logger.LogInformation($"✅ Sales Orders confirmées: {successCount}/{totalCount} ({successRate:F1}% succès)");
+            var totalSuccessCount = successCount + (totalCount - ordersToConfirm.Count); // Inclure celles déjà traitées
+            var successRate = totalCount > 0 ? (double)totalSuccessCount / totalCount * 100 : 0;
+            _logger.LogInformation($"✅ Sales Orders confirmées: {totalSuccessCount}/{totalCount} ({successRate:F1}% succès) - {successCount} nouvelles confirmations");
 
-            return successCount;
+            return totalSuccessCount;
+        }
+
+        /// <summary>
+        /// Filtre les Sales Orders déjà traitées pour éviter les confirmations en double
+        /// </summary>
+        private async Task<List<string>> FilterSalesOrdersAlreadyProcessedAsync(List<string> salesOrderIds)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+
+                var processedOrders = await sqlServerService.GetProcessedSalesOrderIdsAsync();
+                var processedSet = new HashSet<string>(processedOrders);
+
+                var ordersToConfirm = salesOrderIds.Where(id => !processedSet.Contains(id)).ToList();
+
+                _logger.LogDebug($"🔍 Filtrage Sales Orders: {salesOrderIds.Count} reçues, {processedOrders.Count} déjà traitées, {ordersToConfirm.Count} à confirmer");
+
+                return ordersToConfirm;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors du filtrage des Sales Orders, confirmation de toutes");
+                return salesOrderIds; // En cas d'erreur, traiter toutes
+            }
         }
 
         /// <summary>

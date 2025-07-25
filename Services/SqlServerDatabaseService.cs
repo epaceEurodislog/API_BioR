@@ -680,6 +680,103 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+        /// Récupère les IDs des commandes déjà traitées (INT3PLStatus = ProcessedBy3PL)
+        /// </summary>
+        public async Task<List<string>> GetProcessedOrderIdsAsync(string endpointPath)
+        {
+            var processedOrderIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                string orderIdField = endpointPath switch
+                {
+                    var path when path.Contains("PurchOrderTables") => "PurchId",
+                    var path when path.Contains("ReturnOrderTables") => "ReturnItemNum",
+                    var path when path.Contains("TransferOrderTables") => "TransferId",
+                    _ => "OrderId"
+                };
+
+                var sql = $@"
+            SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.{orderIdField}') as OrderId
+            FROM JSON_IN 
+            WHERE JSON_FROM = @EndpointPath
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            AND (
+                JSON_VALUE(JSON_DATA, '$.INT3PLStatus') = 'ProcessedBy3PL'
+                OR JSON_VALUE(JSON_DATA, '$.INT3PLStatus') = 'Processed'
+            )
+            AND JSON_VALUE(JSON_DATA, '$.{orderIdField}') IS NOT NULL";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@EndpointPath", endpointPath);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var orderId = reader.GetString("OrderId");
+                    if (!string.IsNullOrEmpty(orderId))
+                    {
+                        processedOrderIds.Add(orderId);
+                    }
+                }
+
+                _logger.LogDebug($"📊 {processedOrderIds.Count} commandes déjà traitées pour {endpointPath}");
+                return processedOrderIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur lors de la récupération des commandes traitées pour {endpointPath}");
+                return processedOrderIds;
+            }
+        }
+
+        /// <summary>
+        /// Récupère les IDs des Sales Orders déjà traitées (ProcessedBy3PL)
+        /// </summary>
+        public async Task<List<string>> GetProcessedSalesOrderIdsAsync()
+        {
+            var processedOrderIds = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT DISTINCT JSON_VALUE(JSON_DATA, '$.transRefId') as SalesOrderId
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRPackingSlipInterfaces'
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            AND JSON_VALUE(JSON_DATA, '$.INT3PLStatus') = 'ProcessedBy3PL'
+            AND JSON_VALUE(JSON_DATA, '$.transRefId') IS NOT NULL";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var salesOrderId = reader.GetString("SalesOrderId");
+                    if (!string.IsNullOrEmpty(salesOrderId))
+                    {
+                        processedOrderIds.Add(salesOrderId);
+                    }
+                }
+
+                _logger.LogDebug($"📊 {processedOrderIds.Count} Sales Orders déjà traitées (ProcessedBy3PL)");
+                return processedOrderIds;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors de la récupération des Sales Orders traitées");
+                return processedOrderIds;
+            }
+        }
+
+        /// <summary>
         /// Méthode de debug pour analyser les données Sales Orders dans JSON_IN
         /// </summary>
         public async Task<List<SalesOrderDebugInfo>> GetSalesOrderDebugInfoAsync(string salesOrderId)

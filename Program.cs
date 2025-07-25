@@ -19,7 +19,8 @@ namespace DynamicsApiToDatabase
             Console.WriteLine("Version SQL Server avec confirmations commandes - Table JSON_IN");
             Console.WriteLine("Base de données: 7.2.160.173 - Middleware");
             Console.WriteLine("Client: BR | Environnement: SPEED");
-            Console.WriteLine("🔄 NOUVEAU: Confirmations automatiques Purchase/Return/Transfer Orders avec INT3PLStatus\n");
+            Console.WriteLine("🔄 NOUVEAU: Confirmations automatiques Purchase/Return/Transfer/Sales Orders avec INT3PLStatus");
+            Console.WriteLine("🆕 NOUVEAU: Export BL SpeedWMS vers Dynamics 365 avec ImportId\n");
 
             try
             {
@@ -44,6 +45,13 @@ namespace DynamicsApiToDatabase
                     Console.WriteLine("⚠️ Problème avec la colonne JSON_SENT, mais on continue...");
                 }
 
+                // 🆕 NOUVEAU: Vérifier/créer la colonne JSON_IMPORT_ID pour BLExport
+                var jsonOutService = serviceProvider.GetService<JsonOutService>();
+                if (!await jsonOutService.EnsureImportIdColumnExistsAsync())
+                {
+                    Console.WriteLine("⚠️ Problème avec la colonne JSON_IMPORT_ID, mais on continue...");
+                }
+
                 var authService = serviceProvider.GetService<AuthenticationService>();
                 if (!authService.ValidateConfiguration())
                 {
@@ -63,26 +71,31 @@ namespace DynamicsApiToDatabase
 
                 var dataService = serviceProvider.GetService<DynamicsDataService>();
                 var statusConfirmationService = serviceProvider.GetService<StatusConfirmationService>();
+                var blExportService = serviceProvider.GetService<BLExportService>(); // 🆕 NOUVEAU
 
-                await DisplayPreSyncStatisticsAsync(sqlServerService);
+                await DisplayPreSyncStatisticsAsync(sqlServerService, serviceProvider);
 
                 Console.WriteLine("🚀 === DÉBUT SYNCHRONISATION AVEC CONFIRMATIONS === 🚀\n");
 
-                // ✅ NOUVELLE MÉTHODE: Synchronisation avec confirmations automatiques
+                // ✅ EXISTANT: Synchronisation avec confirmations automatiques
                 var syncResults = await dataService.SyncAllEndpointsWithOrderConfirmationsAsync();
 
                 Console.WriteLine("\n📊 === RÉSULTATS DE SYNCHRONISATION === 📊");
                 await DisplaySyncResultsAsync(syncResults, sqlServerService);
 
-                // ✅ NOUVELLE SECTION: Confirmation additionnelle des commandes en attente
+                // ✅ EXISTANT: Confirmation additionnelle des commandes en attente
                 Console.WriteLine("\n🔄 === CONFIRMATION COMMANDES EN ATTENTE === 🔄");
                 await ConfirmPendingOrdersAsync(dataService, statusConfirmationService, token);
 
+                // 🆕 NOUVEAU: Export BL depuis SpeedWMS
+                Console.WriteLine("\n📦 === EXPORT BL SPEEDWMS === 📦");
+                await ProcessBLExportAsync(blExportService, token);
+
                 globalStopwatch.Stop();
                 Console.WriteLine($"\n⏱️ Durée totale: {globalStopwatch.Elapsed.TotalMinutes:F1} minutes");
-                Console.WriteLine("✅ === SYNCHRONISATION AVEC CONFIRMATIONS TERMINÉE === ✅");
+                Console.WriteLine("✅ === SYNCHRONISATION AVEC CONFIRMATIONS ET BLEXPORT TERMINÉE === ✅");
 
-                // 🚀 LANCEMENT DU PROGRAMME EXTERNE
+                // 🚀 EXISTANT: LANCEMENT DU PROGRAMME EXTERNE
                 Console.WriteLine("\n🔄 === LANCEMENT DU TRANSLATOR === 🔄");
                 var externalLauncher = serviceProvider.GetService<ExternalProgramLauncher>();
 
@@ -117,6 +130,103 @@ namespace DynamicsApiToDatabase
             {
                 Console.WriteLine("\nAppuyez sur une touche pour fermer...");
                 Console.ReadKey();
+            }
+        }
+
+        /// <summary>
+        /// 🆕 NOUVELLE MÉTHODE : Traite l'export des BL depuis SpeedWMS vers Dynamics
+        /// </summary>
+        private static async Task ProcessBLExportAsync(BLExportService blExportService, string token)
+        {
+            try
+            {
+                Console.WriteLine("🔍 Vérification connectivité SpeedWMS et endpoints BLExport...");
+
+                // Test de connectivité
+                var connectivityOk = await blExportService.TestDynamicsConnectivityAsync(token);
+                if (!connectivityOk)
+                {
+                    Console.WriteLine("❌ Endpoints BLExport non accessibles, export annulé");
+                    return;
+                }
+
+                Console.WriteLine("✅ Connectivité BLExport OK");
+
+                // Traitement principal BLExport
+                var statistics = await blExportService.ProcessBLExportAsync(token);
+
+                // Affichage des résultats
+                await DisplayBLExportResultsAsync(statistics);
+
+                // Retry des confirmations échouées si nécessaire
+                if (statistics.BLsWithErrors > 0)
+                {
+                    Console.WriteLine("\n🔄 Retry des confirmations BL en échec...");
+                    var retryCount = await blExportService.RetryFailedConfirmationsAsync(token);
+
+                    if (retryCount > 0)
+                    {
+                        Console.WriteLine($"✅ {retryCount} confirmations BL récupérées lors du retry");
+                    }
+                    else
+                    {
+                        Console.WriteLine("ℹ️ Aucune confirmation BL récupérée lors du retry");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Erreur lors de l'export BL: {ex.Message}");
+                Console.WriteLine("⚠️ Le processus continue malgré l'erreur BLExport...");
+            }
+        }
+
+        /// <summary>
+        /// 🆕 NOUVELLE MÉTHODE : Affiche les résultats de l'export BL
+        /// </summary>
+        private static async Task DisplayBLExportResultsAsync(BLExportStatistics statistics)
+        {
+            try
+            {
+                Console.WriteLine("\n📊 === RÉSULTATS BLEXPORT === 📊");
+
+                if (statistics.TotalBLsFound == 0)
+                {
+                    Console.WriteLine("ℹ️ Aucun BL trouvé dans SpeedWMS");
+                    return;
+                }
+
+                Console.WriteLine($"🔍 BL trouvés SpeedWMS: {statistics.TotalBLsFound}");
+                Console.WriteLine($"✅ BL déjà traités: {statistics.BLsAlreadyProcessed}");
+                Console.WriteLine($"🔄 BL à traiter: {statistics.BLsToProcess}");
+                Console.WriteLine($"✅ BL traités avec succès: {statistics.BLsProcessedSuccessfully}");
+                Console.WriteLine($"❌ BL en erreur: {statistics.BLsWithErrors}");
+                Console.WriteLine($"📤 Total POST envoyés: {statistics.TotalPayloadsSent}");
+                Console.WriteLine($"📋 Confirmations envoyées: {statistics.ConfirmationsSent}");
+                Console.WriteLine($"⏱️ Durée: {statistics.TotalProcessingTime.TotalSeconds:F1}s");
+
+                if (statistics.BLsToProcess > 0)
+                {
+                    Console.WriteLine($"📈 Taux de succès: {statistics.SuccessRate:F1}%");
+                }
+
+                // Indicateur visuel du résultat
+                if (statistics.SuccessRate >= 90)
+                {
+                    Console.WriteLine("🎉 Export BL : EXCELLENT");
+                }
+                else if (statistics.SuccessRate >= 70)
+                {
+                    Console.WriteLine("✅ Export BL : BON");
+                }
+                else if (statistics.BLsToProcess > 0)
+                {
+                    Console.WriteLine("⚠️ Export BL : À SURVEILLER");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"⚠️ Erreur affichage résultats BLExport: {ex.Message}");
             }
         }
 
@@ -301,7 +411,7 @@ namespace DynamicsApiToDatabase
             Console.WriteLine();
         }
 
-        private static async Task DisplayPreSyncStatisticsAsync(SqlServerDatabaseService sqlServerService)
+        private static async Task DisplayPreSyncStatisticsAsync(SqlServerDatabaseService sqlServerService, ServiceProvider serviceProvider)
         {
             try
             {
@@ -309,12 +419,33 @@ namespace DynamicsApiToDatabase
                 var confirmStats = await sqlServerService.GetConfirmationStatisticsAsync();
 
                 Console.WriteLine("📈 === STATISTIQUES ACTUELLES === 📈");
-                Console.WriteLine($"📦 Total enregistrements: {stats.TotalRecords:N0}");
+                Console.WriteLine($"📦 Total enregistrements JSON_IN: {stats.TotalRecords:N0}");
                 Console.WriteLine($"✅ Enregistrements actifs: {stats.ActiveRecords:N0}");
                 Console.WriteLine($"🗑️ Enregistrements supprimés: {stats.DeletedRecords:N0}");
                 Console.WriteLine($"🔄 Mis à jour dernières 24h: {stats.UpdatedLast24h:N0}");
                 Console.WriteLine($"📤 Articles confirmés: {confirmStats.ConfirmedArticles:N0} ({confirmStats.ConfirmationRate:F1}%)");
                 Console.WriteLine($"⏳ Confirmations en attente: {confirmStats.PendingConfirmations:N0}");
+
+                // 🆕 NOUVEAU: Statistiques BLExport via JsonOutService
+                try
+                {
+                    var jsonOutService = serviceProvider.GetService<JsonOutService>();
+                    if (jsonOutService != null)
+                    {
+                        var blStats = await jsonOutService.GetBLExportStatisticsAsync();
+                        if (blStats.TotalBLsFound > 0)
+                        {
+                            Console.WriteLine($"📦 BL traités (historique): {blStats.TotalBLsFound:N0}");
+                            Console.WriteLine($"✅ BL confirmés: {blStats.BLsProcessedSuccessfully:N0}");
+                            Console.WriteLine($"❌ BL en erreur: {blStats.BLsWithErrors:N0}");
+                        }
+                    }
+                }
+                catch (Exception blEx)
+                {
+                    Console.WriteLine($"⚠️ Impossible de récupérer les statistiques BLExport: {blEx.Message}");
+                }
+
                 Console.WriteLine();
             }
             catch (Exception ex)
@@ -402,9 +533,12 @@ namespace DynamicsApiToDatabase
         /// <summary>
         /// Ajoute tous les services personnalisés de l'application
         /// </summary>
+        /// <summary>
+        /// Ajoute tous les services personnalisés de l'application
+        /// </summary>
         public static IServiceCollection AddApplicationServices(this IServiceCollection services, IConfiguration configuration)
         {
-            // Services d'authentification et de données
+            // Services d'authentification et de données EXISTANTS
             services.AddScoped<AuthenticationService>();
             services.AddScoped<SqlServerDatabaseService>();
             services.AddScoped<DynamicsDataService>();
@@ -412,7 +546,11 @@ namespace DynamicsApiToDatabase
             services.AddScoped<ExternalProgramLauncher>();
             services.AddScoped<JsonOutService>();
 
-            // Configuration HTTP Client
+            // 🆕 NOUVEAUX SERVICES BLEXPORT
+            services.AddScoped<SpeedWmsDataService>();
+            services.AddScoped<BLExportService>();
+
+            // Configuration HTTP Client EXISTANTS
             services.AddHttpClient<DynamicsDataService>(client =>
             {
                 client.Timeout = TimeSpan.FromMinutes(15);
@@ -431,6 +569,14 @@ namespace DynamicsApiToDatabase
             {
                 client.Timeout = TimeSpan.FromMinutes(5);
                 client.DefaultRequestHeaders.Add("User-Agent", "API_BioR/2.0-Auth");
+            });
+
+            // 🆕 NOUVEAU: HTTP Client pour BLExport
+            services.AddHttpClient<BLExportService>(client =>
+            {
+                client.Timeout = TimeSpan.FromMinutes(20);
+                client.DefaultRequestHeaders.Add("User-Agent", "API_BioR/2.0-BLExport");
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
             });
 
             return services;
@@ -458,5 +604,7 @@ namespace DynamicsApiToDatabase
 
             return services;
         }
+
+        
     }
 }
