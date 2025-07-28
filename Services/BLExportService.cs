@@ -346,7 +346,19 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Crée un payload pour une ligne d'article
+        /// Formate une date pour Dynamics 365 (format ISO 8601) ou retourne null si la date est null
+        /// </summary>
+        private static string? FormatDateForDynamics(DateTime? date)
+        {
+            if (!date.HasValue)
+                return null;
+
+            // Format ISO 8601 requis par Dynamics 365
+            return date.Value.ToString("yyyy-MM-ddTHH:mm:ssZ");
+        }
+
+        /// <summary>
+        /// Crée un payload pour une ligne d'article - VERSION FINALE CORRIGÉE
         /// </summary>
         private BRPackingSlipValidationPayload CreatePayloadForLine(BLExportData bl, BLExportLine line, int index)
         {
@@ -355,21 +367,21 @@ namespace DynamicsApiToDatabase.Services
                 DataAreaId = "br",
                 ImportId = bl.ImportId,
                 TransRefId = bl.TransRefId,
-                BR3PLShippingDate = bl.ShippingDate?.ToString("yyyy-MM-ddTHH:mm:ssZ") ?? "",
+                BR3PLShippingDate = (bl.ShippingDate ?? DateTime.Now).ToString("yyyy-MM-ddTHH:mm:ssZ"),
                 PickingRouteID = bl.PickingRouteId,
                 CarrierServiceCode = bl.CarrierServiceCode,
                 Qty = line.TotalQuantity,
                 BR3PLPackingSlipId = bl.BLNumber,
                 ItemId = line.ItemId,
                 InventLocationId = bl.InventLocationId,
-                BR3PLEndDatePrep = bl.EndDatePrep?.ToString("yyyy-MM-ddTHH:mm:ssZ") ?? "",
+                BR3PLEndDatePrep = (bl.EndDatePrep ?? DateTime.Now).ToString("yyyy-MM-ddTHH:mm:ssZ"),
                 CarrierCode = bl.CarrierCode,
                 InventSerialId = index < line.SerialIds.Count ? line.SerialIds[index] : "",
-                InventBatchId = index < line.BatchIds.Count ? line.BatchIds[index] : "",
-                BRDocStatus = bl.DocStatus,
-                BRDocStatusDate = bl.DocStatusDate?.ToString("yyyy-MM-ddTHH:mm:ssZ") ?? ""
+                InventBatchId = index < line.BatchIds.Count ? line.BatchIds[index] : ""
             };
         }
+
+
 
         /// <summary>
         /// Envoie les données du BL (1er POST)

@@ -23,10 +23,10 @@ namespace DynamicsApiToDatabase.Models
         public string OpeStat { get; set; } = "";           // Statut opération
         public DateTime? Fnc008Date { get; set; }           // Code Chargement
         public string DataHeurreIc { get; set; } = "";      // Date/Heure Statut Documentation
-        
+
         // Données des lignes d'articles
         public List<SpeedWmsBLLine> Lines { get; set; } = new();
-        
+
         // Données de support/emballage
         public List<SpeedWmsSupportData> Supports { get; set; } = new();
     }
@@ -83,13 +83,13 @@ namespace DynamicsApiToDatabase.Models
         public string InventLocationId { get; set; } = "RECNOLP";           // Emplacement (fixe)
         public string DocStatus { get; set; } = "";                         // Statut documentation
         public DateTime? DocStatusDate { get; set; }                        // Date statut documentation
-        
+
         // Lignes d'articles regroupées
         public List<BLExportLine> Lines { get; set; } = new();
-        
+
         // Données de support
         public List<BLSupportInfo> Supports { get; set; } = new();
-        
+
         // Métadonnées
         public DateTime CreatedDate { get; set; } = DateTime.Now;
         public bool HasErrors { get; set; }
@@ -130,10 +130,6 @@ namespace DynamicsApiToDatabase.Models
         public decimal GroupingHeight { get; set; }
     }
 
-    /// <summary>
-    /// Payload JSON final pour l'endpoint BRPackingSlipValidationInterfaces
-    /// Structure exacte attendue par l'API Dynamics
-    /// </summary>
     public class BRPackingSlipValidationPayload
     {
         [JsonPropertyName("dataAreaId")]
@@ -146,7 +142,7 @@ namespace DynamicsApiToDatabase.Models
         public string TransRefId { get; set; } = "";
 
         [JsonPropertyName("BR3PLShippingDate")]
-        public string BR3PLShippingDate { get; set; } = "";         // Format ISO 8601
+        public string BR3PLShippingDate { get; set; } = "";
 
         [JsonPropertyName("pickingRouteID")]
         public string PickingRouteID { get; set; } = "";
@@ -167,7 +163,7 @@ namespace DynamicsApiToDatabase.Models
         public string InventLocationId { get; set; } = "RECNOLP";
 
         [JsonPropertyName("BR3PLEndDatePrep")]
-        public string BR3PLEndDatePrep { get; set; } = "";          // Format ISO 8601
+        public string BR3PLEndDatePrep { get; set; } = "";
 
         [JsonPropertyName("CarrierCode")]
         public string CarrierCode { get; set; } = "";
@@ -177,13 +173,6 @@ namespace DynamicsApiToDatabase.Models
 
         [JsonPropertyName("inventBatchId")]
         public string InventBatchId { get; set; } = "";
-
-        // Champs additionnels selon le mapping (à compléter si nécessaire)
-        [JsonPropertyName("BRDocStatus")]
-        public string BRDocStatus { get; set; } = "";
-
-        [JsonPropertyName("BRDocStatusDate")]
-        public string BRDocStatusDate { get; set; } = "";
     }
 
     /// <summary>
@@ -222,7 +211,7 @@ namespace DynamicsApiToDatabase.Models
         public DateTime ProcessingStartTime { get; set; }
         public DateTime ProcessingEndTime { get; set; }
 
-        public double SuccessRate => TotalBLsFound > 0 ? 
+        public double SuccessRate => TotalBLsFound > 0 ?
             (double)BLsProcessedSuccessfully / BLsToProcess * 100 : 0;
 
         public string GetSummary()

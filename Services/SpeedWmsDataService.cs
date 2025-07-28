@@ -58,6 +58,10 @@ namespace DynamicsApiToDatabase.Services
                 var blHeaders = await GetBLHeadersAsync(connection);
                 _logger.LogInformation($"📊 {blHeaders.Count} BL trouvés dans SpeedWMS");
 
+                // 🚨 LIMITATION TEMPORAIRE POUR TESTS - Décommentez la ligne suivante
+                 blHeaders = blHeaders.Take(100).ToList();
+                _logger.LogInformation($"⚠️ LIMITATION ACTIVÉE : Traitement des {blHeaders.Count} premiers BL seulement");
+
                 // Pour chaque BL, récupérer les lignes d'articles et supports
                 foreach (var blHeader in blHeaders)
                 {
