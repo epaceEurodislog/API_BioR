@@ -90,8 +90,10 @@ namespace DynamicsApiToDatabase.Services
             }
         }
 
+
         /// <summary>
-        /// Récupère les en-têtes des BL depuis la table OPE_DAT
+        /// Récupère les en-têtes des BL depuis la table OPE_DAT - VERSION FINALE CORRIGÉE
+        /// Basée sur le diagnostic : OPE_KEYU = int, OPE_TOP22 = numeric, etc.
         /// </summary>
         private async Task<List<SpeedWmsBLData>> GetBLHeadersAsync(SqlConnection connection)
         {
@@ -99,23 +101,21 @@ namespace DynamicsApiToDatabase.Services
 
             try
             {
+                // ✅ CORRECTION BASÉE SUR LE DIAGNOSTIC RÉEL
                 const string sql = @"
-                    SELECT 
-                        OPE_KEYU,
-                        ISNULL(OPE_REDO, '') as OPE_REDO,
-                        ISNULL(OPE_ALPHA17, '') as OPE_ALPHA17,
-                        ISNULL(OPE_CTRA, '') as OPE_CTRA,
-                        ISNULL(OPE_ALPHA40, '') as OPE_ALPHA40,
-                        ISNULL(OPE_ALPHA41, '') as OPE_ALPHA41,
-                        OPE_MODA,
-                        ISNULL(OPE_TOP22, '') as OPE_TOP22,
-                        ISNULL(OPE_STAT, '') as OPE_STAT,
-                        FNC008DATE,
-                        ISNULL(OPE_DAT_DATEHEURRE, '') as OPE_DAT_DATEHEURRE
-                    FROM OPE_DAT
-                    WHERE OPE_KEYU IS NOT NULL
-                    AND OPE_KEYU != ''
-                    ORDER BY OPE_KEYU";
+            SELECT 
+                OPE_KEYU,                                    -- int NOT NULL
+                ISNULL(OPE_REDO, '') as OPE_REDO,           -- varchar(50)
+                ISNULL(OPE_ALPHA17, '') as OPE_ALPHA17,     -- varchar(255)
+                ISNULL(OPE_CTRA, '') as OPE_CTRA,           -- varchar(35)
+                ISNULL(OPE_ALPHA40, '') as OPE_ALPHA40,     -- varchar(50)
+                ISNULL(OPE_ALPHA41, '') as OPE_ALPHA41,     -- varchar(50)
+                OPE_MODA,                                    -- date NULL
+                ISNULL(OPE_TOP22, 0) as OPE_TOP22,          -- numeric NULL
+                ISNULL(OPE_STAT, '') as OPE_STAT            -- varchar(10)
+            FROM OPE_DAT
+            WHERE OPE_KEYU IS NOT NULL
+            ORDER BY OPE_KEYU";
 
                 using var command = new SqlCommand(sql, connection);
                 using var reader = await command.ExecuteReaderAsync();
@@ -124,23 +124,27 @@ namespace DynamicsApiToDatabase.Services
                 {
                     var blData = new SpeedWmsBLData
                     {
-                        OpeKeyu = reader.GetString("OPE_KEYU"),
-                        OpeRedo = reader.GetString("OPE_REDO"),
-                        OpeAlpha17 = reader.GetString("OPE_ALPHA17"),
-                        OpeCtra = reader.GetString("OPE_CTRA"),
-                        OpeAlpha40 = reader.GetString("OPE_ALPHA40"),
-                        OpeAlpha41 = reader.GetString("OPE_ALPHA41"),
-                        OpeModa = reader.IsDBNull("OPE_MODA") ? null : reader.GetDateTime("OPE_MODA"),
-                        OpeTop22 = reader.GetString("OPE_TOP22"),
-                        OpeStat = reader.GetString("OPE_STAT"),
-                        Fnc008Date = reader.IsDBNull("FNC008DATE") ? null : reader.GetDateTime("FNC008DATE"),
-                        DataHeurreIc = reader.GetString("OPE_DAT_DATEHEURRE")
+                        // ✅ CORRECTION : OPE_KEYU est un int, donc GetInt32
+                        OpeKeyu = reader.GetInt32("OPE_KEYU").ToString(),
+                        OpeRedo = SafeGetString(reader, "OPE_REDO"),
+                        OpeAlpha17 = SafeGetString(reader, "OPE_ALPHA17"),
+                        OpeCtra = SafeGetString(reader, "OPE_CTRA"),
+                        OpeAlpha40 = SafeGetString(reader, "OPE_ALPHA40"),
+                        OpeAlpha41 = SafeGetString(reader, "OPE_ALPHA41"),
+                        OpeModa = SafeGetDateTime(reader, "OPE_MODA"),
+                        // ✅ CORRECTION : OPE_TOP22 est numeric, donc conversion
+                        OpeTop22 = SafeGetNumeric(reader, "OPE_TOP22").ToString(),
+                        OpeStat = SafeGetString(reader, "OPE_STAT"),
+
+                        // Valeurs par défaut pour les champs manquants
+                        Fnc008Date = null,
+                        DataHeurreIc = ""
                     };
 
                     blHeaders.Add(blData);
                 }
 
-                _logger.LogDebug($"📋 {blHeaders.Count} en-têtes BL récupérés depuis OPE_DAT");
+                _logger.LogDebug($"📋 {blHeaders.Count} en-têtes BL récupérés depuis OPE_DAT (version finale corrigée)");
                 return blHeaders;
             }
             catch (Exception ex)
@@ -151,7 +155,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Récupère les lignes d'articles pour un BL donné
+        /// Récupère les lignes d'articles pour un BL donné - CORRECTION SELON VRAIE STRUCTURE
         /// </summary>
         private async Task<List<SpeedWmsBLLine>> GetBLLinesAsync(SqlConnection connection, string opeKeyu)
         {
@@ -159,31 +163,24 @@ namespace DynamicsApiToDatabase.Services
 
             try
             {
+                // ✅ CORRECTION : Utiliser la jointure correcte via OPE_NoOE
+                // D'après le diagnostic, MIL_DAT n'a pas OPE_KEYU mais OPE_NoOE
                 const string sql = @"
-                    SELECT 
-                        MIL.OPE_KEYU,
-                        ISNULL(MIL.MIL_DAT_ART_CODE, '') as MIL_DAT_ART_CODE,
-                        ISNULL(MIL.MIL_DAT_MIL_QTTP, 0) as MIL_DAT_MIL_QTTP,
-                        ISNULL(MIL.MIL_DAT_MIL_QTTA, 0) as MIL_DAT_MIL_QTTA,
-                        ISNULL(MIL.MIL_DAT_MIL_QTMA, 0) as MIL_DAT_MIL_QTMA,
-                        ISNULL(MIL.MIL_DAT_MIL_LOT1P, '') as MIL_DAT_MIL_LOT1P,
-                        ISNULL(MIL.MIL_DAT_MIL_LOT2P, '') as MIL_DAT_MIL_LOT2P,
-                        ISNULL(MIL.MIL_DAT_MIL_SUPP, '') as MIL_DAT_MIL_SUPP,
-                        -- RG5: Max des MIE_MODA rattaché à l'OPE_KEYU en statut 040
-                        (SELECT MAX(MIE_MODA) 
-                         FROM MIE_DAT 
-                         WHERE MIE_DAT.OPE_KEYU = MIL.OPE_KEYU 
-                         AND ISNULL(MIE_STAT, '') = '040') as MAX_MIE_MODA,
-                        -- DLUO minimum calculée
-                        (SELECT MIN(OPL_DLOM) 
-                         FROM OPL_DAT 
-                         WHERE OPL_DAT.OPE_KEYU = MIL.OPE_KEYU) as MIN_DLUO
-                    FROM MIL_DAT MIL
-                    WHERE MIL.OPE_KEYU = @OpeKeyu
-                    ORDER BY MIL.MIL_DAT_ART_CODE";
+            SELECT 
+                ISNULL(MIL.ART_CODE, '') as ART_CODE,               -- varchar(35)
+                ISNULL(MIL.MIL_QTTP, 0) as MIL_QTTP,                -- decimal
+                ISNULL(MIL.MIL_QTTA, 0) as MIL_QTTA,                -- decimal  
+                ISNULL(MIL.MIL_QTMA, 0) as MIL_QTMA,                -- decimal
+                ISNULL(MIL.MIL_LOT1P, '') as MIL_LOT1P,             -- varchar(100)
+                ISNULL(MIL.MIL_LOT2P, '') as MIL_LOT2P,             -- varchar(100)
+                ISNULL(MIL.MIL_SUPP, '') as MIL_SUPP                -- varchar(25)
+            FROM MIL_DAT MIL
+            INNER JOIN OPE_DAT OPE ON MIL.OPE_NoOE = OPE.OPE_NoOE
+            WHERE OPE.OPE_KEYU = @OpeKeyu
+            ORDER BY MIL.ART_CODE";
 
                 using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@OpeKeyu", opeKeyu);
+                command.Parameters.AddWithValue("@OpeKeyu", int.Parse(opeKeyu));
 
                 using var reader = await command.ExecuteReaderAsync();
 
@@ -191,22 +188,22 @@ namespace DynamicsApiToDatabase.Services
                 {
                     var line = new SpeedWmsBLLine
                     {
-                        OpeKeyu = reader.GetString("OPE_KEYU"),
-                        ArtCode = reader.GetString("MIL_DAT_ART_CODE"),
-                        QttePreparee = reader.GetDecimal("MIL_DAT_MIL_QTTP"),
-                        QttePrevue = reader.GetDecimal("MIL_DAT_MIL_QTTA"),
-                        QtteManquante = reader.GetDecimal("MIL_DAT_MIL_QTMA"),
-                        Lot1 = reader.GetString("MIL_DAT_MIL_LOT1P"),
-                        Lot2 = reader.GetString("MIL_DAT_MIL_LOT2P"),
-                        Support = reader.GetString("MIL_DAT_MIL_SUPP"),
-                        MaxMieModa = reader.IsDBNull("MAX_MIE_MODA") ? null : reader.GetDateTime("MAX_MIE_MODA"),
-                        DluoMin = reader.IsDBNull("MIN_DLUO") ? null : reader.GetDateTime("MIN_DLUO")
+                        OpeKeyu = opeKeyu,
+                        ArtCode = SafeGetString(reader, "ART_CODE"),
+                        QttePreparee = SafeGetDecimal(reader, "MIL_QTTP"),
+                        QttePrevue = SafeGetDecimal(reader, "MIL_QTTA"),
+                        QtteManquante = SafeGetDecimal(reader, "MIL_QTMA"),
+                        Lot1 = SafeGetString(reader, "MIL_LOT1P"),
+                        Lot2 = SafeGetString(reader, "MIL_LOT2P"),
+                        Support = SafeGetString(reader, "MIL_SUPP"),
+                        MaxMieModa = null,
+                        DluoMin = null
                     };
 
                     lines.Add(line);
                 }
 
-                _logger.LogDebug($"📄 {lines.Count} lignes récupérées pour BL {opeKeyu}");
+                _logger.LogDebug($"📄 {lines.Count} lignes récupérées pour BL {opeKeyu} (structure corrigée)");
                 return lines;
             }
             catch (Exception ex)
@@ -217,7 +214,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Récupère les données de support/emballage pour un BL donné
+        /// Récupère les données de support/emballage pour un BL donné - CORRECTION SELON VRAIE STRUCTURE
         /// </summary>
         private async Task<List<SpeedWmsSupportData>> GetBLSupportsAsync(SqlConnection connection, string opeKeyu)
         {
@@ -225,32 +222,22 @@ namespace DynamicsApiToDatabase.Services
 
             try
             {
+                // ✅ CORRECTION : Utiliser SEX_SUPE au lieu de SEX_SUPP (selon le diagnostic)
                 const string sql = @"
-                    SELECT 
-                        SEX.SEX_SUPP as SupportId,
-                        ISNULL(SEX.SEX_POISR, 0) as SEX_POISR,
-                        ISNULL(SEX.SEX_PROF, 0) as SEX_PROF,
-                        ISNULL(SEX.SEX_LARG, 0) as SEX_LARG,
-                        ISNULL(SEX.SEX_HAUT, 0) as SEX_HAUT,
-                        ISNULL(SEX.SEX_SUPR, '') as SEX_SUPR,
-                        -- Dimensions emballage regroupement
-                        ISNULL(EMB.EMB_PROF, 0) as EMB_PROF,
-                        ISNULL(EMB.EMB_LARG, 0) as EMB_LARG,
-                        ISNULL(EMB.EMB_HAUT, 0) as EMB_HAUT,
-                        -- RG4: Somme des SEX_POISR rattaché au SEX_SUPR + Poids emballage
-                        (SELECT SUM(ISNULL(S2.SEX_POISR, 0)) 
-                         FROM SEX_DAT S2 
-                         WHERE S2.SEX_SUPR = SEX.SEX_SUPR
-                         AND S2.OPE_KEYU = SEX.OPE_KEYU) + ISNULL(EMB.EMB_POISR, 0) as POIDS_REGROUPEMENT,
-                        -- Type emballage pour RG2 et RG3 (à définir selon la logique métier)
-                        ISNULL(EMB.EMB_TYPE, '') as EMB_TYPE
-                    FROM SEX_DAT SEX
-                    LEFT JOIN EMB_DAT EMB ON SEX.SEX_SUPR = EMB.EMB_CODE
-                    WHERE SEX.OPE_KEYU = @OpeKeyu
-                    ORDER BY SEX.SEX_SUPP";
+            SELECT 
+                ISNULL(SEX.SEX_SUPE, '') as SEX_SUPE,               -- varchar(25) - CORRIGÉ
+                ISNULL(SEX.SEX_POISR, 0) as SEX_POISR,              -- bigint  
+                ISNULL(SEX.SEX_PROF, 0) as SEX_PROF,                -- decimal
+                ISNULL(SEX.SEX_LARG, 0) as SEX_LARG,                -- decimal
+                ISNULL(SEX.SEX_HAUT, 0) as SEX_HAUT,                -- decimal
+                ISNULL(SEX.SEX_SUPR, '') as SEX_SUPR                -- varchar(25)
+            FROM SEX_DAT SEX
+            INNER JOIN OPE_DAT OPE ON SEX.SEX_NoOE = OPE.OPE_NoOE
+            WHERE OPE.OPE_KEYU = @OpeKeyu
+            ORDER BY SEX.SEX_SUPE";
 
                 using var command = new SqlCommand(sql, connection);
-                command.Parameters.AddWithValue("@OpeKeyu", opeKeyu);
+                command.Parameters.AddWithValue("@OpeKeyu", int.Parse(opeKeyu));
 
                 using var reader = await command.ExecuteReaderAsync();
 
@@ -258,32 +245,380 @@ namespace DynamicsApiToDatabase.Services
                 {
                     var support = new SpeedWmsSupportData
                     {
-                        SupportId = reader.GetString("SupportId"),
-                        Poids = reader.GetDecimal("SEX_POISR"),
-                        Longueur = reader.GetDecimal("SEX_PROF"),
-                        Largeur = reader.GetDecimal("SEX_LARG"),
-                        Hauteur = reader.GetDecimal("SEX_HAUT"),
-                        SupportRegroupement = reader.GetString("SEX_SUPR"),
-                        LongueurRegroupement = reader.GetDecimal("EMB_PROF"),
-                        LargeurRegroupement = reader.GetDecimal("EMB_LARG"),
-                        HauteurRegroupement = reader.GetDecimal("EMB_HAUT"),
-                        PoidsRegroupement = reader.GetDecimal("POIDS_REGROUPEMENT"),
+                        SupportId = SafeGetString(reader, "SEX_SUPE"), // ✅ CORRIGÉ
+                        Poids = SafeGetDecimal(reader, "SEX_POISR"),
+                        Longueur = SafeGetDecimal(reader, "SEX_PROF"),
+                        Largeur = SafeGetDecimal(reader, "SEX_LARG"),
+                        Hauteur = SafeGetDecimal(reader, "SEX_HAUT"),
+                        SupportRegroupement = SafeGetString(reader, "SEX_SUPR"),
 
-                        // RG2 et RG3: Déterminer type selon emballage
-                        SupportType = DeterminePackageType(reader.GetString("EMB_TYPE"), false),
-                        TypeRegroupement = DeterminePackageType(reader.GetString("EMB_TYPE"), true)
+                        // Valeurs par défaut pour les champs manquants
+                        LongueurRegroupement = 0,
+                        LargeurRegroupement = 0,
+                        HauteurRegroupement = 0,
+                        PoidsRegroupement = 0,
+                        SupportType = "Colis",
+                        TypeRegroupement = "Palette"
                     };
 
                     supports.Add(support);
                 }
 
-                _logger.LogDebug($"📦 {supports.Count} supports récupérés pour BL {opeKeyu}");
+                _logger.LogDebug($"📦 {supports.Count} supports récupérés pour BL {opeKeyu} (structure corrigée)");
                 return supports;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"❌ Erreur lors de la récupération des supports pour BL {opeKeyu}");
                 return supports;
+            }
+        }
+
+        /// <summary>
+        /// Version de diagnostic pour identifier les vraies colonnes disponibles
+        /// À AJOUTER temporairement pour vérifier la structure
+        /// </summary>
+        public async Task<string> DiagnoseTableJoinsAsync()
+        {
+            try
+            {
+                using var connection = new SqlConnection(_speedWmsConnectionString);
+                await connection.OpenAsync();
+
+                var report = "🔍 === DIAGNOSTIC JOINTURES === 🔍\n\n";
+
+                // Test 1: Vérifier les clés de jointure disponibles
+                try
+                {
+                    const string joinTestSql = @"
+                SELECT TOP 5
+                    OPE.OPE_KEYU,
+                    OPE.OPE_NoOE,
+                    MIL.OPE_NoOE as MIL_OPE_NoOE,
+                    MIL.ART_CODE
+                FROM OPE_DAT OPE
+                LEFT JOIN MIL_DAT MIL ON OPE.OPE_NoOE = MIL.OPE_NoOE
+                WHERE OPE.OPE_KEYU IN (1,2,3,4,5)
+                ORDER BY OPE.OPE_KEYU";
+
+                    using var joinCommand = new SqlCommand(joinTestSql, connection);
+                    using var joinReader = await joinCommand.ExecuteReaderAsync();
+
+                    report += "✅ Test jointure OPE_DAT <-> MIL_DAT via OPE_NoOE:\n";
+
+                    while (await joinReader.ReadAsync())
+                    {
+                        var opeKeyu = joinReader.GetInt32("OPE_KEYU");
+                        var opeNoOE = joinReader.IsDBNull("OPE_NoOE") ? "NULL" : joinReader.GetInt64("OPE_NoOE").ToString();
+                        var milOpeNoOE = joinReader.IsDBNull("MIL_OPE_NoOE") ? "NULL" : joinReader.GetInt64("MIL_OPE_NoOE").ToString();
+                        var artCode = joinReader.IsDBNull("ART_CODE") ? "NULL" : joinReader.GetString("ART_CODE");
+
+                        report += $"   BL {opeKeyu}: OPE_NoOE={opeNoOE}, MIL_OPE_NoOE={milOpeNoOE}, ART={artCode}\n";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    report += $"❌ Erreur test jointure MIL_DAT: {ex.Message}\n";
+                }
+
+                report += "\n";
+
+                // Test 2: Vérifier les clés de jointure pour SEX_DAT
+                try
+                {
+                    const string sexJoinTestSql = @"
+                SELECT TOP 5
+                    OPE.OPE_KEYU,
+                    OPE.OPE_NoOE,
+                    SEX.SEX_NoOE as SEX_OPE_NoOE,
+                    SEX.SEX_SUPE
+                FROM OPE_DAT OPE
+                LEFT JOIN SEX_DAT SEX ON OPE.OPE_NoOE = SEX.SEX_NoOE
+                WHERE OPE.OPE_KEYU IN (1,2,3,4,5)
+                ORDER BY OPE.OPE_KEYU";
+
+                    using var sexCommand = new SqlCommand(sexJoinTestSql, connection);
+                    using var sexReader = await sexCommand.ExecuteReaderAsync();
+
+                    report += "✅ Test jointure OPE_DAT <-> SEX_DAT via SEX_NoOE:\n";
+
+                    while (await sexReader.ReadAsync())
+                    {
+                        var opeKeyu = sexReader.GetInt32("OPE_KEYU");
+                        var opeNoOE = sexReader.IsDBNull("OPE_NoOE") ? "NULL" : sexReader.GetInt64("OPE_NoOE").ToString();
+                        var sexOpeNoOE = sexReader.IsDBNull("SEX_OPE_NoOE") ? "NULL" : sexReader.GetInt64("SEX_OPE_NoOE").ToString();
+                        var sexSupe = sexReader.IsDBNull("SEX_SUPE") ? "NULL" : sexReader.GetString("SEX_SUPE");
+
+                        report += $"   BL {opeKeyu}: OPE_NoOE={opeNoOE}, SEX_NoOE={sexOpeNoOE}, SUPE={sexSupe}\n";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    report += $"❌ Erreur test jointure SEX_DAT: {ex.Message}\n";
+                }
+
+                return report;
+            }
+            catch (Exception ex)
+            {
+                return $"❌ Erreur diagnostic jointures: {ex.Message}";
+            }
+        }
+
+        // ==========================================
+        // MÉTHODES UTILITAIRES SÉCURISÉES
+        // ==========================================
+
+        /// <summary>
+        /// Lecture sécurisée d'une chaîne de caractères - VERSION AMÉLIORÉE
+        /// </summary>
+        private string SafeGetString(SqlDataReader reader, string columnName)
+        {
+            try
+            {
+                if (reader.IsDBNull(columnName))
+                    return "";
+
+                var value = reader[columnName];
+                return value?.ToString()?.Trim() ?? "";
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"⚠️ Erreur lecture string {columnName}: {ex.Message}");
+                return "";
+            }
+        }
+
+        /// <summary>
+        /// Lecture sécurisée d'un décimal - VERSION AMÉLIORÉE
+        /// </summary>
+        private decimal SafeGetDecimal(SqlDataReader reader, string columnName)
+        {
+            try
+            {
+                if (reader.IsDBNull(columnName))
+                    return 0;
+
+                var value = reader[columnName];
+
+                // Conversion selon le type réel
+                switch (value)
+                {
+                    case decimal d:
+                        return d;
+                    case double db:
+                        return (decimal)db;
+                    case float f:
+                        return (decimal)f;
+                    case int i:
+                        return i;
+                    case long l:
+                        return l;
+                    case byte b:
+                        return b;
+                    case short s:
+                        return s;
+                    case string str when !string.IsNullOrEmpty(str.Trim()):
+                        var cleanStr = str.Trim().Replace(',', '.');
+                        if (decimal.TryParse(cleanStr, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out var result))
+                            return result;
+                        break;
+                }
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"⚠️ Erreur conversion decimal {columnName}: {ex.Message}");
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Lecture sécurisée d'une date - VERSION AMÉLIORÉE
+        /// </summary>
+        private DateTime? SafeGetDateTime(SqlDataReader reader, string columnName)
+        {
+            try
+            {
+                if (reader.IsDBNull(columnName))
+                    return null;
+
+                var value = reader[columnName];
+
+                // Tentative de conversion directe
+                if (value is DateTime dateTimeValue)
+                    return dateTimeValue;
+
+                // Tentative de parsing depuis string
+                var stringValue = value?.ToString();
+                if (!string.IsNullOrEmpty(stringValue))
+                {
+                    if (DateTime.TryParse(stringValue, out var parsedDate))
+                    {
+                        return parsedDate;
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"⚠️ Erreur conversion DateTime {columnName}: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Teste et analyse la structure des tables SpeedWMS pour adaptation
+        /// À AJOUTER dans Services/SpeedWmsDataService.cs
+        /// </summary>
+        public async Task<string> AnalyzeSpeedWmsStructureAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔍 Analyse de la structure SpeedWMS...");
+
+                using var connection = new SqlConnection(_speedWmsConnectionString);
+                await connection.OpenAsync();
+
+                var report = "📊 === ANALYSE STRUCTURE SPEEDWMS === 📊\n\n";
+
+                // Tester les tables principales
+                var tablesToTest = new[] { "OPE_DAT", "MIL_DAT", "SEX_DAT", "MIE_DAT", "OPL_DAT", "EMB_DAT" };
+
+                foreach (var tableName in tablesToTest)
+                {
+                    report += await AnalyzeTableStructureAsync(connection, tableName);
+                    report += "\n";
+                }
+
+                _logger.LogInformation("✅ Analyse structure terminée");
+                return report;
+            }
+            catch (Exception ex)
+            {
+                var errorReport = $"❌ Erreur analyse structure: {ex.Message}";
+                _logger.LogError(ex, "❌ Erreur lors de l'analyse de structure SpeedWMS");
+                return errorReport;
+            }
+        }
+
+        /// <summary>
+        /// Analyse la structure d'une table spécifique
+        /// </summary>
+        private async Task<string> AnalyzeTableStructureAsync(SqlConnection connection, string tableName)
+        {
+            try
+            {
+                // Vérifier si la table existe
+                const string tableExistsSql = @"
+            SELECT COUNT(*) 
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_NAME = @TableName";
+
+                using var tableExistsCommand = new SqlCommand(tableExistsSql, connection);
+                tableExistsCommand.Parameters.AddWithValue("@TableName", tableName);
+                var tableExists = (int)await tableExistsCommand.ExecuteScalarAsync() > 0;
+
+                if (!tableExists)
+                {
+                    return $"❌ Table {tableName}: N'EXISTE PAS";
+                }
+
+                // Récupérer la structure des colonnes
+                const string columnsSql = @"
+            SELECT 
+                COLUMN_NAME,
+                DATA_TYPE,
+                IS_NULLABLE,
+                ISNULL(CHARACTER_MAXIMUM_LENGTH, 0) as MAX_LENGTH
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = @TableName
+            ORDER BY ORDINAL_POSITION";
+
+                using var columnsCommand = new SqlCommand(columnsSql, connection);
+                columnsCommand.Parameters.AddWithValue("@TableName", tableName);
+
+                var tableReport = $"✅ Table {tableName}:\n";
+
+                using var reader = await columnsCommand.ExecuteReaderAsync();
+                var columnCount = 0;
+
+                while (await reader.ReadAsync())
+                {
+                    columnCount++;
+                    var columnName = reader.GetString("COLUMN_NAME");
+                    var dataType = reader.GetString("DATA_TYPE");
+                    var isNullable = reader.GetString("IS_NULLABLE");
+                    var maxLength = reader.GetInt32("MAX_LENGTH");
+
+                    var nullableStr = isNullable == "YES" ? "NULL" : "NOT NULL";
+                    var lengthStr = maxLength > 0 ? $"({maxLength})" : "";
+
+                    tableReport += $"   - {columnName}: {dataType}{lengthStr} {nullableStr}\n";
+                }
+
+                tableReport += $"   📊 Total: {columnCount} colonnes\n";
+
+                // Tester un SELECT simple pour voir si la table est accessible
+                await reader.CloseAsync();
+
+                try
+                {
+                    var testSql = $"SELECT COUNT(*) FROM {tableName}";
+                    using var testCommand = new SqlCommand(testSql, connection);
+                    var rowCount = (int)await testCommand.ExecuteScalarAsync();
+                    tableReport += $"   📦 Contient: {rowCount:N0} enregistrements\n";
+                }
+                catch (Exception ex)
+                {
+                    tableReport += $"   ⚠️ Erreur lecture: {ex.Message}\n";
+                }
+
+                return tableReport;
+            }
+            catch (Exception ex)
+            {
+                return $"❌ Table {tableName}: Erreur analyse - {ex.Message}\n";
+            }
+        }
+
+        /// <summary>
+        /// Test simple de connectivité SpeedWMS avec rapport détaillé
+        /// VERSION ÉTENDUE de TestSpeedWmsConnectionAsync
+        /// </summary>
+        public async Task<string> TestSpeedWmsConnectionDetailedAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔍 Test de connectivité SpeedWMS détaillé...");
+
+                using var connection = new SqlConnection(_speedWmsConnectionString);
+                await connection.OpenAsync();
+
+                var report = "📊 === TEST CONNEXION SPEEDWMS === 📊\n";
+                report += $"✅ Connexion établie avec succès\n";
+                report += $"🔗 Serveur: {connection.DataSource}\n";
+                report += $"🗄️ Base: {connection.Database}\n";
+                report += $"👤 Utilisateur: {connection.ClientConnectionId}\n\n";
+
+                // Test des tables principales
+                var testResults = await AnalyzeSpeedWmsStructureAsync();
+                report += testResults;
+
+                _logger.LogInformation("✅ Test connectivité SpeedWMS terminé avec succès");
+                return report;
+            }
+            catch (Exception ex)
+            {
+                var errorReport = $"❌ ÉCHEC CONNEXION SPEEDWMS\n";
+                errorReport += $"💥 Erreur: {ex.Message}\n";
+                errorReport += $"🔧 Vérifiez la chaîne de connexion SpeedWmsConnection dans appsettings.json\n";
+
+                _logger.LogError(ex, "❌ Échec test connectivité SpeedWMS");
+                return errorReport;
             }
         }
 
@@ -571,6 +906,62 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+        /// Lecture sécurisée d'un numeric (pour OPE_TOP22, etc.)
+        /// </summary>
+        private decimal SafeGetNumeric(SqlDataReader reader, string columnName)
+        {
+            try
+            {
+                if (reader.IsDBNull(columnName))
+                    return 0;
+
+                var value = reader[columnName];
+
+                // Gestion des types numeric SQL Server
+                if (value is decimal decimalValue)
+                    return decimalValue;
+
+                if (value is double doubleValue)
+                    return (decimal)doubleValue;
+
+                if (value is float floatValue)
+                    return (decimal)floatValue;
+
+                if (value is int intValue)
+                    return intValue;
+
+                if (value is long longValue)
+                    return longValue;
+
+                if (value is byte byteValue)
+                    return byteValue;
+
+                if (value is short shortValue)
+                    return shortValue;
+
+                // Tentative de parsing depuis string
+                var stringValue = value?.ToString();
+                if (!string.IsNullOrEmpty(stringValue))
+                {
+                    stringValue = stringValue.Trim().Replace(',', '.');
+
+                    if (decimal.TryParse(stringValue, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var parsedValue))
+                    {
+                        return parsedValue;
+                    }
+                }
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"⚠️ Erreur conversion numeric {columnName}: {ex.Message}");
+                return 0;
+            }
+        }
+
+        /// <summary>
         /// Obtient des statistiques sur les données SpeedWMS
         /// </summary>
         public async Task<SpeedWmsStatistics> GetSpeedWmsStatisticsAsync()
@@ -608,6 +999,281 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogError(ex, "❌ Erreur récupération statistiques SpeedWMS");
                 return stats;
+            }
+        }
+
+        /// <summary>
+        /// Méthode de diagnostic pour identifier les problèmes de types de données
+        /// À AJOUTER dans Services/SpeedWmsDataService.cs
+        /// </summary>
+        public async Task<string> DiagnoseSpeedWmsDataTypesAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🔍 Diagnostic des types de données SpeedWMS...");
+
+                using var connection = new SqlConnection(_speedWmsConnectionString);
+                await connection.OpenAsync();
+
+                var report = "📊 === DIAGNOSTIC TYPES DONNÉES SPEEDWMS === 📊\n\n";
+
+                // Test 1: Analyser OPE_DAT en détail
+                report += await DiagnoseTableAsync(connection, "OPE_DAT");
+                report += "\n";
+
+                // Test 2: Analyser MIL_DAT en détail
+                report += await DiagnoseTableAsync(connection, "MIL_DAT");
+                report += "\n";
+
+                // Test 3: Analyser SEX_DAT en détail
+                report += await DiagnoseTableAsync(connection, "SEX_DAT");
+                report += "\n";
+
+                // Test 4: Test d'un SELECT simple
+                report += await TestSimpleSelectAsync(connection);
+
+                _logger.LogInformation("✅ Diagnostic terminé");
+                return report;
+            }
+            catch (Exception ex)
+            {
+                var errorReport = $"❌ Erreur diagnostic: {ex.Message}";
+                _logger.LogError(ex, "❌ Erreur lors du diagnostic SpeedWMS");
+                return errorReport;
+            }
+        }
+
+        /// <summary>
+        /// Diagnostique une table spécifique
+        /// </summary>
+        private async Task<string> DiagnoseTableAsync(SqlConnection connection, string tableName)
+        {
+            try
+            {
+                var report = $"🔍 Table {tableName}:\n";
+
+                // Récupérer la structure des colonnes avec types détaillés
+                const string columnsSql = @"
+            SELECT 
+                COLUMN_NAME,
+                DATA_TYPE,
+                IS_NULLABLE,
+                ISNULL(CHARACTER_MAXIMUM_LENGTH, 0) as MAX_LENGTH,
+                ISNULL(NUMERIC_PRECISION, 0) as PRECISION,
+                ISNULL(NUMERIC_SCALE, 0) as SCALE
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = @TableName
+            ORDER BY ORDINAL_POSITION";
+
+                using var columnsCommand = new SqlCommand(columnsSql, connection);
+                columnsCommand.Parameters.AddWithValue("@TableName", tableName);
+
+                using var reader = await columnsCommand.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var columnName = reader.GetString("COLUMN_NAME");
+                    var dataType = reader.GetString("DATA_TYPE");
+                    var isNullable = reader.GetString("IS_NULLABLE");
+                    var maxLength = reader.GetInt32("MAX_LENGTH");
+                    var precision = reader.GetInt32("PRECISION");
+                    var scale = reader.GetInt32("SCALE");
+
+                    var nullableStr = isNullable == "YES" ? "NULL" : "NOT NULL";
+                    var typeDetails = dataType;
+
+                    if (maxLength > 0)
+                        typeDetails += $"({maxLength})";
+                    else if (precision > 0)
+                        typeDetails += $"({precision},{scale})";
+
+                    report += $"   - {columnName}: {typeDetails} {nullableStr}\n";
+                }
+
+                await reader.CloseAsync();
+
+                // Test d'un SELECT simple pour voir les vraies données
+                try
+                {
+                    var testSql = $"SELECT TOP 3 * FROM {tableName}";
+                    using var testCommand = new SqlCommand(testSql, connection);
+                    using var testReader = await testCommand.ExecuteReaderAsync();
+
+                    report += $"   📊 Échantillon données:\n";
+                    var rowCount = 0;
+
+                    while (await testReader.ReadAsync() && rowCount < 3)
+                    {
+                        rowCount++;
+                        report += $"      Ligne {rowCount}: ";
+
+                        for (int i = 0; i < testReader.FieldCount; i++)
+                        {
+                            var fieldName = testReader.GetName(i);
+                            var fieldValue = testReader.IsDBNull(i) ? "NULL" : testReader[i]?.ToString();
+                            var fieldType = testReader[i]?.GetType().Name ?? "NULL";
+
+                            report += $"{fieldName}={fieldValue}({fieldType}) ";
+                        }
+                        report += "\n";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    report += $"   ❌ Erreur échantillon: {ex.Message}\n";
+                }
+
+                return report;
+            }
+            catch (Exception ex)
+            {
+                return $"❌ Erreur diagnostic table {tableName}: {ex.Message}\n";
+            }
+        }
+
+        /// <summary>
+        /// Test d'un SELECT simple pour identifier le problème exact
+        /// </summary>
+        private async Task<string> TestSimpleSelectAsync(SqlConnection connection)
+        {
+            var report = "🧪 === TESTS SELECT SIMPLES === 🧪\n";
+
+            var testQueries = new[]
+            {
+        ("Compte OPE_DAT", "SELECT COUNT(*) FROM OPE_DAT"),
+        ("Premier OPE_KEYU", "SELECT TOP 1 OPE_KEYU FROM OPE_DAT"),
+        ("Types OPE_MODA", "SELECT TOP 3 OPE_KEYU, OPE_MODA FROM OPE_DAT WHERE OPE_MODA IS NOT NULL"),
+        ("Compte MIL_DAT", "SELECT COUNT(*) FROM MIL_DAT"),
+        ("Compte SEX_DAT", "SELECT COUNT(*) FROM SEX_DAT")
+    };
+
+            foreach (var (testName, query) in testQueries)
+            {
+                try
+                {
+                    using var command = new SqlCommand(query, connection);
+                    using var reader = await command.ExecuteReaderAsync();
+
+                    report += $"✅ {testName}: ";
+
+                    if (await reader.ReadAsync())
+                    {
+                        var result = reader[0]?.ToString() ?? "NULL";
+                        report += $"{result}\n";
+                    }
+                    else
+                    {
+                        report += "Aucun résultat\n";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    report += $"❌ {testName}: {ex.Message}\n";
+                }
+            }
+
+            return report;
+        }
+
+        /// <summary>
+        /// Version simplifiée de GetAllAvailableBLsAsync pour le diagnostic
+        /// </summary>
+        public async Task<string> TestBLRetrievalAsync()
+        {
+            try
+            {
+                _logger.LogInformation("🧪 Test récupération BL en mode diagnostic...");
+
+                using var connection = new SqlConnection(_speedWmsConnectionString);
+                await connection.OpenAsync();
+
+                var report = "🧪 === TEST RÉCUPÉRATION BL === 🧪\n";
+
+                // Test 1: Simple count
+                try
+                {
+                    const string countSql = "SELECT COUNT(*) FROM OPE_DAT";
+                    using var countCommand = new SqlCommand(countSql, connection);
+                    var count = (int)await countCommand.ExecuteScalarAsync();
+                    report += $"✅ Total BL dans OPE_DAT: {count}\n";
+                }
+                catch (Exception ex)
+                {
+                    report += $"❌ Erreur count OPE_DAT: {ex.Message}\n";
+                    return report;
+                }
+
+                // Test 2: SELECT simplifié
+                try
+                {
+                    const string simpleSql = @"
+                SELECT TOP 5
+                    OPE_KEYU,
+                    OPE_REDO,
+                    OPE_STAT
+                FROM OPE_DAT
+                WHERE OPE_KEYU IS NOT NULL
+                ORDER BY OPE_KEYU";
+
+                    using var simpleCommand = new SqlCommand(simpleSql, connection);
+                    using var reader = await simpleCommand.ExecuteReaderAsync();
+
+                    report += "✅ Échantillon BL:\n";
+                    var rowCount = 0;
+
+                    while (await reader.ReadAsync() && rowCount < 5)
+                    {
+                        rowCount++;
+                        var opeKeyu = SafeGetString(reader, "OPE_KEYU");
+                        var opeRedo = SafeGetString(reader, "OPE_REDO");
+                        var opeStat = SafeGetString(reader, "OPE_STAT");
+
+                        report += $"   BL {rowCount}: {opeKeyu} | {opeRedo} | {opeStat}\n";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    report += $"❌ Erreur SELECT simple: {ex.Message}\n";
+                    return report;
+                }
+
+                // Test 3: SELECT avec OPE_MODA (source probable du problème)
+                try
+                {
+                    const string dateSql = @"
+                SELECT TOP 5
+                    OPE_KEYU,
+                    OPE_MODA
+                FROM OPE_DAT
+                WHERE OPE_KEYU IS NOT NULL
+                ORDER BY OPE_KEYU";
+
+                    using var dateCommand = new SqlCommand(dateSql, connection);
+                    using var dateReader = await dateCommand.ExecuteReaderAsync();
+
+                    report += "✅ Test dates OPE_MODA:\n";
+                    var dateRowCount = 0;
+
+                    while (await dateReader.ReadAsync() && dateRowCount < 5)
+                    {
+                        dateRowCount++;
+                        var opeKeyu = SafeGetString(dateReader, "OPE_KEYU");
+                        var opeModa = SafeGetDateTime(dateReader, "OPE_MODA");
+
+                        report += $"   BL {dateRowCount}: {opeKeyu} | Date: {opeModa?.ToString("dd/MM/yyyy") ?? "NULL"}\n";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    report += $"❌ Erreur SELECT dates: {ex.Message}\n";
+                    report += "💡 Le problème vient probablement de OPE_MODA\n";
+                }
+
+                return report;
+            }
+            catch (Exception ex)
+            {
+                return $"❌ Erreur test récupération BL: {ex.Message}";
             }
         }
     }

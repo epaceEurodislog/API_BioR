@@ -87,13 +87,14 @@ namespace DynamicsApiToDatabase
                 Console.WriteLine("\n🔄 === CONFIRMATION COMMANDES EN ATTENTE === 🔄");
                 await ConfirmPendingOrdersAsync(dataService, statusConfirmationService, token);
 
-                // 🆕 NOUVEAU: Export BL depuis SpeedWMS
-                Console.WriteLine("\n📦 === EXPORT BL SPEEDWMS === 📦");
-                await ProcessBLExportAsync(blExportService, token);
 
                 globalStopwatch.Stop();
                 Console.WriteLine($"\n⏱️ Durée totale: {globalStopwatch.Elapsed.TotalMinutes:F1} minutes");
                 Console.WriteLine("✅ === SYNCHRONISATION AVEC CONFIRMATIONS ET BLEXPORT TERMINÉE === ✅");
+
+                // 🆕 NOUVEAU: Export BL depuis SpeedWMS
+                Console.WriteLine("\n📦 === EXPORT BL SPEEDWMS === 📦");
+                await ProcessBLExportAsync(blExportService, token);
 
                 // 🚀 EXISTANT: LANCEMENT DU PROGRAMME EXTERNE
                 Console.WriteLine("\n🔄 === LANCEMENT DU TRANSLATOR === 🔄");
@@ -134,7 +135,8 @@ namespace DynamicsApiToDatabase
         }
 
         /// <summary>
-        /// 🆕 NOUVELLE MÉTHODE : Traite l'export des BL depuis SpeedWMS vers Dynamics
+        /// Version finale de ProcessBLExportAsync avec diagnostic ET traitement réel
+        /// À REMPLACER dans Program.cs
         /// </summary>
         private static async Task ProcessBLExportAsync(BLExportService blExportService, string token)
         {
@@ -142,7 +144,7 @@ namespace DynamicsApiToDatabase
             {
                 Console.WriteLine("🔍 Vérification connectivité SpeedWMS et endpoints BLExport...");
 
-                // Test de connectivité
+                // Test de connectivité endpoints Dynamics
                 var connectivityOk = await blExportService.TestDynamicsConnectivityAsync(token);
                 if (!connectivityOk)
                 {
@@ -152,7 +154,7 @@ namespace DynamicsApiToDatabase
 
                 Console.WriteLine("✅ Connectivité BLExport OK");
 
-                // Traitement principal BLExport
+                // ✅ ACTIVATION : Traitement principal BLExport
                 var statistics = await blExportService.ProcessBLExportAsync(token);
 
                 // Affichage des résultats
@@ -605,6 +607,6 @@ namespace DynamicsApiToDatabase
             return services;
         }
 
-        
+
     }
 }
