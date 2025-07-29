@@ -59,8 +59,8 @@ namespace DynamicsApiToDatabase.Services
                 _logger.LogInformation($"📊 {blHeaders.Count} BL trouvés dans SpeedWMS");
 
                 // 🚨 LIMITATION TEMPORAIRE POUR TESTS - Décommentez la ligne suivante
-                 blHeaders = blHeaders.Take(100).ToList();
-                _logger.LogInformation($"⚠️ LIMITATION ACTIVÉE : Traitement des {blHeaders.Count} premiers BL seulement");
+                // blHeaders = blHeaders.Take(100).ToList();
+                //_logger.LogInformation($"⚠️ LIMITATION ACTIVÉE : Traitement des {blHeaders.Count} premiers BL seulement");
 
                 // Pour chaque BL, récupérer les lignes d'articles et supports
                 foreach (var blHeader in blHeaders)
@@ -119,6 +119,8 @@ namespace DynamicsApiToDatabase.Services
                 ISNULL(OPE_STAT, '') as OPE_STAT            -- varchar(10)
             FROM OPE_DAT
             WHERE OPE_KEYU IS NOT NULL
+            AND OPE_CRQI = 'INTERFACE'
+            AND ACT_CODE = 'COSMETIQUE'
             ORDER BY OPE_KEYU";
 
                 using var command = new SqlCommand(sql, connection);
