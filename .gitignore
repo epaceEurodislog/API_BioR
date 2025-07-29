@@ -19,6 +19,7 @@ bin/
 obj/
 out/
 exports/
+queries/
 
 # Fichiers de build
 *.dll

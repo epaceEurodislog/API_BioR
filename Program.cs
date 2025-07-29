@@ -96,6 +96,10 @@ namespace DynamicsApiToDatabase
                 Console.WriteLine("\n📦 === EXPORT BL SPEEDWMS === 📦");
                 await ProcessBLExportAsync(blExportService, token);
 
+                // 🆕 NOUVEAU: TRAITEMENT JOURNAUX DE RÉCEPTION
+                Console.WriteLine("\n🧬 === TRAITEMENT JOURNAUX DE RÉCEPTION === 🧬");
+                await ProcessItemArrivalJournalsAsync(serviceProvider, token);
+
                 // 🚀 EXISTANT: LANCEMENT DU PROGRAMME EXTERNE
                 Console.WriteLine("\n🔄 === LANCEMENT DU TRANSLATOR === 🔄");
                 var externalLauncher = serviceProvider.GetService<ExternalProgramLauncher>();
@@ -131,6 +135,96 @@ namespace DynamicsApiToDatabase
             {
                 Console.WriteLine("\nAppuyez sur une touche pour fermer...");
                 Console.ReadKey();
+            }
+        }
+
+        /// <summary>
+        /// 🆕 NOUVELLE MÉTHODE : Traite tous les journaux de réception ItemArrival
+        /// </summary>
+        private static async Task ProcessItemArrivalJournalsAsync(IServiceProvider serviceProvider, string token)
+        {
+            try
+            {
+                Console.WriteLine("🔍 Vérification des journaux de réception en attente...");
+
+                var reeDataService = serviceProvider.GetRequiredService<IREEDataService>();
+                var itemArrivalService = serviceProvider.GetRequiredService<IItemArrivalJournalService>();
+                var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+
+                // Diagnostic des tables REE (optionnel, pour debug initial)
+                if (configuration.GetValue<bool>("ItemArrivalJournal:EnableDiagnostic", false))
+                {
+                    Console.WriteLine("🔍 Diagnostic des tables REE...");
+                    var reeStructureReport = await reeDataService.AnalyzeREEStructureAsync();
+                    Console.WriteLine(reeStructureReport);
+
+                    var reeDiagnosticReport = await reeDataService.DiagnoseREETablesAsync();
+                    Console.WriteLine(reeDiagnosticReport);
+                }
+
+                // Traitement des journaux de réception
+                var itemArrivalReport = await itemArrivalService.ProcessAllJournalsAsync(token);
+
+                if (itemArrivalReport.TotalJournals > 0)
+                {
+                    Console.WriteLine("\n📊 === RAPPORT JOURNAUX DE RÉCEPTION === 📊");
+                    Console.WriteLine(itemArrivalReport.GetSummary());
+
+                    // Afficher les erreurs s'il y en a
+                    if (itemArrivalReport.ErrorMessages.Any())
+                    {
+                        Console.WriteLine("⚠️ Erreurs détectées lors du traitement:");
+                        foreach (var error in itemArrivalReport.ErrorMessages.Take(5)) // Limiter à 5 erreurs pour la console
+                        {
+                            Console.WriteLine($"   - {error}");
+                        }
+
+                        if (itemArrivalReport.ErrorMessages.Count > 5)
+                        {
+                            Console.WriteLine($"   ... et {itemArrivalReport.ErrorMessages.Count - 5} autres erreurs");
+                        }
+                    }
+
+                    // Statistiques détaillées
+                    if (itemArrivalReport.SuccessfulJournals > 0)
+                    {
+                        Console.WriteLine($"✅ Journaux traités avec succès: {itemArrivalReport.SuccessfulJournals}");
+                        Console.WriteLine($"📤 Total en-têtes envoyés: {itemArrivalReport.TotalHeaders}");
+                        Console.WriteLine($"📄 Total lignes envoyées: {itemArrivalReport.TotalLines}");
+                        Console.WriteLine($"✅ Journaux confirmés: {itemArrivalReport.ConfirmedJournals}");
+
+                        // Indicateur visuel du résultat
+                        var successRate = itemArrivalReport.SuccessRate;
+                        if (successRate >= 90)
+                        {
+                            Console.WriteLine("🎉 Journaux de réception : EXCELLENT");
+                        }
+                        else if (successRate >= 70)
+                        {
+                            Console.WriteLine("✅ Journaux de réception : BON");
+                        }
+                        else if (itemArrivalReport.TotalJournals > 0)
+                        {
+                            Console.WriteLine("⚠️ Journaux de réception : À SURVEILLER");
+                        }
+                    }
+
+                    if (itemArrivalReport.FailedJournals > 0)
+                    {
+                        Console.WriteLine($"❌ Journaux en échec: {itemArrivalReport.FailedJournals}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("📭 Aucun journal de réception en attente de traitement");
+                }
+
+                Console.WriteLine($"⏱️ Durée traitement journaux: {itemArrivalReport.TotalProcessingTime.TotalMinutes:F1} minutes");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Erreur lors du traitement des journaux de réception: {ex.Message}");
+                Console.WriteLine("⚠️ Le processus continue malgré l'erreur ItemArrival...");
             }
         }
 
@@ -396,6 +490,8 @@ namespace DynamicsApiToDatabase
             services.AddSingleton<IConfiguration>(configuration);
             services.AddApplicationLogging();
             services.AddApplicationServices(configuration);
+            services.AddScoped<IREEDataService, REEDataService>();
+            services.AddScoped<IItemArrivalJournalService, ItemArrivalJournalService>();
 
             return services;
         }

@@ -635,5 +635,129 @@ namespace DynamicsApiToDatabase.Services
                 return "❌ Erreur génération rapport";
             }
         }
+
+        // Extension de JsonOutService.cs pour supporter ItemArrivalJournal
+        // À AJOUTER dans le fichier Services/JsonOutService.cs existant
+
+        /// <summary>
+        /// 🆕 Enregistre un envoi pour ItemArrivalJournal avec JournalNumber et PackingSlip
+        /// </summary>
+        public async Task LogItemArrivalJournalAsync(string journalNumber, string packingSlipId,
+            string jsonData, string destination, string errorMessage = "")
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            INSERT INTO JSON_OUT (
+                JSON_DEST, JSON_CCLI, JSON_DATA, JSON_TRTP, JSON_TRDA, JSON_TREN, JSON_IMPORT_ID
+            ) VALUES (
+                @Destination, @ClientCode, @JsonData, @TransactionType, GETDATE(), @Environment, @ImportId
+            )";
+
+                using var command = new SqlCommand(sql, connection);
+
+                // Tronquer les valeurs selon les limites de colonne
+                var destination_safe = TruncateString(destination, 50);
+                var environment_safe = TruncateString($"JOURNAL_{journalNumber}", 50);
+                var importId_safe = TruncateString($"{journalNumber}_{packingSlipId}", 100);
+
+                command.Parameters.AddWithValue("@Destination", destination_safe);
+                command.Parameters.AddWithValue("@ClientCode", "BR");
+                command.Parameters.AddWithValue("@JsonData", jsonData ?? "");
+                command.Parameters.AddWithValue("@TransactionType", 1); // 1 = envoi
+                command.Parameters.AddWithValue("@Environment", environment_safe);
+                command.Parameters.AddWithValue("@ImportId", importId_safe);
+
+                await command.ExecuteNonQueryAsync();
+
+                if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    _logger.LogWarning($"⚠️ Journal {journalNumber} - {destination}: {errorMessage}");
+                }
+                else
+                {
+                    _logger.LogDebug($"📝 Journal {journalNumber} - {destination} enregistré dans JSON_OUT");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur enregistrement JSON_OUT pour journal {journalNumber}");
+            }
+        }
+
+        /// <summary>
+        /// 🆕 Récupère les statistiques des journaux de réception depuis JSON_OUT
+        /// </summary>
+        public async Task<Dictionary<string, int>> GetItemArrivalJournalStatsAsync()
+        {
+            var stats = new Dictionary<string, int>
+            {
+                ["TotalHeaders"] = 0,
+                ["TotalLines"] = 0,
+                ["TotalConfirmations"] = 0,
+                ["Last24Hours"] = 0
+            };
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                // Statistiques par type de destination
+                const string statsSql = @"
+            SELECT 
+                JSON_DEST,
+                COUNT(*) as COUNT
+            FROM JSON_OUT 
+            WHERE JSON_DEST IN ('ItemArrivalHeaders', 'ItemArrivalLines', 'ItemArrivalConfirmation')
+            GROUP BY JSON_DEST";
+
+                using var statsCommand = new SqlCommand(statsSql, connection);
+                using var statsReader = await statsCommand.ExecuteReaderAsync();
+
+                while (await statsReader.ReadAsync())
+                {
+                    var dest = statsReader.GetString("JSON_DEST");
+                    var count = statsReader.GetInt32("COUNT");
+
+                    switch (dest)
+                    {
+                        case "ItemArrivalHeaders":
+                            stats["TotalHeaders"] = count;
+                            break;
+                        case "ItemArrivalLines":
+                            stats["TotalLines"] = count;
+                            break;
+                        case "ItemArrivalConfirmation":
+                            stats["TotalConfirmations"] = count;
+                            break;
+                    }
+                }
+
+                statsReader.Close();
+
+                // Statistiques des dernières 24h
+                const string last24hSql = @"
+            SELECT COUNT(*) 
+            FROM JSON_OUT 
+            WHERE JSON_DEST LIKE 'ItemArrival%'
+              AND JSON_CRDA >= @Since24h";
+
+                using var last24hCommand = new SqlCommand(last24hSql, connection);
+                last24hCommand.Parameters.AddWithValue("@Since24h", DateTime.Now.AddDays(-1));
+                stats["Last24Hours"] = (int)await last24hCommand.ExecuteScalarAsync();
+
+                _logger.LogDebug($"📊 Stats ItemArrival: Headers={stats["TotalHeaders"]}, Lines={stats["TotalLines"]}, Confirmations={stats["TotalConfirmations"]}, 24h={stats["Last24Hours"]}");
+                return stats;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur récupération stats ItemArrivalJournal");
+                return stats;
+            }
+        }
     }
 }
