@@ -97,7 +97,6 @@ namespace DynamicsApiToDatabase.Services
 
         /// <summary>
         /// Récupère les en-têtes des BL depuis la table OPE_DAT - VERSION FINALE CORRIGÉE
-        /// Basée sur le diagnostic : OPE_KEYU = int, OPE_TOP22 = numeric, etc.
         /// </summary>
         private async Task<List<SpeedWmsBLData>> GetBLHeadersAsync(SqlConnection connection)
         {
@@ -105,7 +104,6 @@ namespace DynamicsApiToDatabase.Services
 
             try
             {
-                // ✅ CORRECTION BASÉE SUR LE DIAGNOSTIC RÉEL
                 const string sql = @"
             SELECT 
                 OPE_KEYU,                                    -- int NOT NULL
@@ -121,6 +119,8 @@ namespace DynamicsApiToDatabase.Services
             WHERE OPE_KEYU IS NOT NULL
             AND OPE_CRQI = 'INTERFACE'
             AND ACT_CODE = 'COSMETIQUE'
+            -- 🧪 FILTRE TEST : Seulement OPE_ALPHA17 = PP000283
+            AND OPE_ALPHA17 = 'PP000283'
             ORDER BY OPE_KEYU";
 
                 using var command = new SqlCommand(sql, connection);
@@ -130,7 +130,6 @@ namespace DynamicsApiToDatabase.Services
                 {
                     var blData = new SpeedWmsBLData
                     {
-                        // ✅ CORRECTION : OPE_KEYU est un int, donc GetInt32
                         OpeKeyu = reader.GetInt32("OPE_KEYU").ToString(),
                         OpeRedo = SafeGetString(reader, "OPE_REDO"),
                         OpeAlpha17 = SafeGetString(reader, "OPE_ALPHA17"),
@@ -138,11 +137,8 @@ namespace DynamicsApiToDatabase.Services
                         OpeAlpha40 = SafeGetString(reader, "OPE_ALPHA40"),
                         OpeAlpha41 = SafeGetString(reader, "OPE_ALPHA41"),
                         OpeModa = SafeGetDateTime(reader, "OPE_MODA"),
-                        // ✅ CORRECTION : OPE_TOP22 est numeric, donc conversion
                         OpeTop22 = SafeGetNumeric(reader, "OPE_TOP22").ToString(),
                         OpeStat = SafeGetString(reader, "OPE_STAT"),
-
-                        // Valeurs par défaut pour les champs manquants
                         Fnc008Date = null,
                         DataHeurreIc = ""
                     };
@@ -150,7 +146,14 @@ namespace DynamicsApiToDatabase.Services
                     blHeaders.Add(blData);
                 }
 
-                _logger.LogDebug($"📋 {blHeaders.Count} en-têtes BL récupérés depuis OPE_DAT (version finale corrigée)");
+                // 🧪 LOG DE TEST
+                _logger.LogWarning($"🧪 FILTRE TEST ACTIF : Seulement OPE_ALPHA17='PP000283' - {blHeaders.Count} BL trouvé(s)");
+
+                foreach (var bl in blHeaders)
+                {
+                    _logger.LogWarning($"🧪 BL TEST: {bl.OpeKeyu} | ALPHA17={bl.OpeAlpha17} | REDO={bl.OpeRedo}");
+                }
+
                 return blHeaders;
             }
             catch (Exception ex)
@@ -695,14 +698,14 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Transforme un BL SpeedWMS en BL d'export
+        /// ✅ Transforme un BL SpeedWMS en BL d'export avec ImportId = OPE_KEYU
         /// </summary>
         private async Task<BLExportData> TransformSingleBLAsync(SpeedWmsBLData speedBL)
         {
             var exportBL = new BLExportData
             {
                 BLNumber = speedBL.OpeKeyu,
-                ImportId = GenerateImportId(speedBL.OpeKeyu),
+                ImportId = speedBL.OpeKeyu,  // ✅ CORRECTION: ImportId = OPE_KEYU directement
                 TransRefId = speedBL.OpeRedo,
                 PickingRouteId = speedBL.OpeAlpha17,
                 CarrierCode = speedBL.OpeCtra,
@@ -737,7 +740,7 @@ namespace DynamicsApiToDatabase.Services
             // Transformer les supports
             exportBL.Supports = TransformBLSupports(speedBL.Supports);
 
-            _logger.LogDebug($"✅ BL {speedBL.OpeKeyu} transformé: {exportBL.Lines.Count} lignes, {exportBL.Supports.Count} supports");
+            _logger.LogDebug($"✅ BL {speedBL.OpeKeyu} transformé: ImportId={exportBL.ImportId}, {exportBL.Lines.Count} lignes, {exportBL.Supports.Count} supports");
 
             return exportBL;
         }
@@ -819,15 +822,6 @@ namespace DynamicsApiToDatabase.Services
             }
 
             return supportInfos;
-        }
-
-        /// <summary>
-        /// Génère l'ImportId au format {BL}_{timestamp}
-        /// </summary>
-        private string GenerateImportId(string blNumber)
-        {
-            var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
-            return $"{blNumber}_{timestamp}";
         }
 
         /// <summary>

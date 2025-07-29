@@ -141,8 +141,10 @@ namespace DynamicsApiToDatabase.Models
         [JsonPropertyName("transRefId")]
         public string TransRefId { get; set; } = "";
 
+        // ✅ CORRECTION: Exclure si null ou vide
         [JsonPropertyName("BR3PLShippingDate")]
-        public string BR3PLShippingDate { get; set; } = "";
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public string? BR3PLShippingDate { get; set; }
 
         [JsonPropertyName("pickingRouteID")]
         public string PickingRouteID { get; set; } = "";
@@ -162,8 +164,10 @@ namespace DynamicsApiToDatabase.Models
         [JsonPropertyName("InventLocationId")]
         public string InventLocationId { get; set; } = "RECNOLP";
 
+        // ✅ CORRECTION: Exclure si null ou vide
         [JsonPropertyName("BR3PLEndDatePrep")]
-        public string BR3PLEndDatePrep { get; set; } = "";
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public string? BR3PLEndDatePrep { get; set; }
 
         [JsonPropertyName("CarrierCode")]
         public string CarrierCode { get; set; } = "";

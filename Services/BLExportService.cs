@@ -304,44 +304,97 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Génère les payloads JSON pour un BL (un payload par ligne d'article)
+        /// ✅ SOLUTION: Génère les payloads avec ImportId = OPE_KEYU et gestion correcte des dates
         /// </summary>
         private List<BRPackingSlipValidationPayload> GeneratePayloadsForBL(BLExportData bl)
         {
             var payloads = new List<BRPackingSlipValidationPayload>();
 
+            foreach (var line in bl.Lines)
+            {
+                var payload = new BRPackingSlipValidationPayload
+                {
+                    ImportId = bl.BLNumber,
+                    TransRefId = bl.TransRefId,
+                    PickingRouteID = string.IsNullOrEmpty(bl.PickingRouteId) ? bl.TransRefId : bl.PickingRouteId,
+                    CarrierCode = bl.CarrierCode,
+                    CarrierServiceCode = bl.CarrierServiceCode,
+                    ItemId = line.ItemId,
+                    Qty = line.TotalQuantity,
+                    InventLocationId = bl.InventLocationId,
+                    BR3PLPackingSlipId = bl.BLNumber,
+                    InventSerialId = line.SerialIds.FirstOrDefault() ?? "",
+                    InventBatchId = line.BatchIds.FirstOrDefault() ?? ""
+                };
+
+                // ✅ CORRECTION: Ne définir les dates QUE si elles ont une valeur
+                if (bl.ShippingDate.HasValue)
+                {
+                    payload.BR3PLShippingDate = bl.ShippingDate.Value.ToString("yyyy-MM-ddTHH:mm:ssZ");
+                }
+                // ✅ IMPORTANT: Si pas de date, ne pas définir la propriété (laisser null/vide)
+
+                if (bl.EndDatePrep.HasValue)
+                {
+                    payload.BR3PLEndDatePrep = bl.EndDatePrep.Value.ToString("yyyy-MM-ddTHH:mm:ssZ");
+                }
+                // ✅ IMPORTANT: Si pas de date, ne pas définir la propriété (laisser null/vide)
+
+                payloads.Add(payload);
+
+                _logger.LogDebug($"🔧 Payload généré: ImportId={payload.ImportId}, TransRefId={payload.TransRefId}, ItemId={payload.ItemId}, ShippingDate={payload.BR3PLShippingDate ?? "NULL"}, EndDatePrep={payload.BR3PLEndDatePrep ?? "NULL"}");
+            }
+
+            return payloads;
+        }
+
+        /// <summary>
+        /// POST de confirmation avec ImportId = OPE_KEYU
+        /// </summary>
+        private async Task<bool> PostConfirmationAsync(BLExportData bl, string authToken)
+        {
             try
             {
-                foreach (var line in bl.Lines)
+                var url = $"{_config.DynamicsBaseUrl}/{_config.ConfirmationEndpoint}";
+
+                // ✅ Payload de confirmation avec ImportId = OPE_KEYU
+                var confirmationPayload = new
                 {
-                    // Gérer les articles avec plusieurs lots/séries
-                    if (line.BatchIds.Count > 0 || line.SerialIds.Count > 0)
-                    {
-                        // Créer un payload par combinaison lot/série
-                        var maxItems = Math.Max(line.BatchIds.Count, line.SerialIds.Count);
-                        maxItems = Math.Max(maxItems, 1); // Au minimum 1 payload
+                    ImportId = bl.BLNumber, // ✅ ImportId = OPE_KEYU
+                    transRefId = bl.TransRefId
+                };
 
-                        for (int i = 0; i < maxItems; i++)
-                        {
-                            var payload = CreatePayloadForLine(bl, line, i);
-                            payloads.Add(payload);
-                        }
-                    }
-                    else
-                    {
-                        // Article sans lot/série
-                        var payload = CreatePayloadForLine(bl, line, 0);
-                        payloads.Add(payload);
-                    }
+                var json = JsonSerializer.Serialize(confirmationPayload, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    WriteIndented = false
+                });
+
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {authToken}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                _logger.LogDebug($"📤 POST confirmation vers {url}: ImportId={bl.BLNumber}, TransRefId={bl.TransRefId}");
+
+                var response = await _httpClient.PostAsync(url, content);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return true;
                 }
-
-                _logger.LogDebug($"📋 BL {bl.BLNumber}: {payloads.Count} payloads générés");
-                return payloads;
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError($"❌ Erreur confirmation BL {bl.BLNumber}: HTTP {response.StatusCode}: {errorContent}");
+                    return false;
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Erreur génération payloads pour BL {bl.BLNumber}");
-                return payloads;
+                _logger.LogError(ex, $"❌ Exception confirmation BL {bl.BLNumber}");
+                return false;
             }
         }
 
@@ -479,42 +532,30 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Envoie la confirmation du BL (2ème POST)
+        /// ✅ CORRECT: Confirmation avec POST vide - aucun contenu JSON requis
         /// </summary>
         private async Task<bool> SendBLConfirmationAsync(string authToken, BLExportData bl)
         {
             try
             {
                 var endpoint = $"{_baseUrl}/{_config.ConfirmationEndpoint}";
-                _logger.LogDebug($"📋 Envoi confirmation BL {bl.BLNumber} vers {endpoint}");
-
-                // Payload pour la confirmation (structure à confirmer selon l'API)
-                var confirmationPayload = new
-                {
-                    ImportId = bl.ImportId,
-                    BR3PLPackingSlipId = bl.BLNumber,
-                    dataAreaId = "br"
-                };
-
-                var jsonPayload = JsonSerializer.Serialize(confirmationPayload, new JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = null
-                });
-
-                await _jsonOutService.LogJsonSentAsync($"BL_CONFIRM_{bl.BLNumber}", jsonPayload, endpoint);
 
                 _httpClient.DefaultRequestHeaders.Clear();
                 _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {authToken}");
                 _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
 
-                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+                // ✅ CORRECTION: POST vide sans contenu JSON
+                _logger.LogDebug($"📤 POST confirmation vide vers {endpoint} pour BL {bl.BLNumber}");
 
-                var response = await _httpClient.PostAsync(endpoint, content);
+                // Log pour traçabilité (même si vide)
+                await _jsonOutService.LogJsonSentAsync($"BL_CONFIRM_{bl.BLNumber}", "POST_VIDE", endpoint);
+
+                var response = await _httpClient.PostAsync(endpoint, null); // ✅ Contenu null
                 var responseContent = await response.Content.ReadAsStringAsync();
 
                 if (response.IsSuccessStatusCode)
                 {
-                    _logger.LogInformation($"✅ Confirmation BL {bl.BLNumber} envoyée avec succès");
+                    _logger.LogInformation($"✅ Confirmation BL {bl.BLNumber} envoyée avec succès (POST vide)");
                     await _jsonOutService.LogSuccessAsync($"BL_CONFIRM_{bl.BLNumber}", responseContent);
                     return true;
                 }
@@ -522,16 +563,49 @@ namespace DynamicsApiToDatabase.Services
                 {
                     var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
                     _logger.LogError($"❌ Erreur confirmation BL {bl.BLNumber}: {errorMessage}");
-                    await _jsonOutService.LogErrorAsync($"BL_CONFIRM_{bl.BLNumber}", jsonPayload, errorMessage, (int)response.StatusCode);
+                    await _jsonOutService.LogErrorAsync($"BL_CONFIRM_{bl.BLNumber}", "POST_VIDE", errorMessage, (int)response.StatusCode);
                     return false;
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"❌ Exception confirmation BL {bl.BLNumber}");
-                await _jsonOutService.LogErrorAsync($"BL_CONFIRM_{bl.BLNumber}", "", ex.Message);
+                await _jsonOutService.LogErrorAsync($"BL_CONFIRM_{bl.BLNumber}", "POST_VIDE", ex.Message);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE: Détermine un PickingRouteID valide avec logs de test
+        /// </summary>
+        private string GetValidPickingRouteID(BLExportData bl)
+        {
+            // 🧪 LOG DÉTAILLÉ POUR TEST PP000283
+            if (bl.PickingRouteId == "PP000283")
+            {
+                _logger.LogWarning($"🧪 TEST PP000283 - BL: {bl.BLNumber}");
+                _logger.LogWarning($"🧪 TEST PP000283 - PickingRouteId: '{bl.PickingRouteId}'");
+                _logger.LogWarning($"🧪 TEST PP000283 - TransRefId: '{bl.TransRefId}'");
+                _logger.LogWarning($"🧪 TEST PP000283 - Decision: UTILISER PP000283 DIRECTEMENT");
+
+                return bl.PickingRouteId; // 🧪 FORCER l'utilisation pour tester l'erreur
+            }
+
+            // Logique normale pour les autres
+            if (string.IsNullOrEmpty(bl.PickingRouteId) || bl.PickingRouteId.Trim() == "")
+            {
+                _logger.LogDebug($"📍 OPE_ALPHA17 vide, utilisation TransRefId: {bl.TransRefId}");
+                return bl.TransRefId;
+            }
+
+            // Pour tous les autres PP*, utiliser TransRefId par sécurité
+            if (bl.PickingRouteId.StartsWith("PP"))
+            {
+                _logger.LogWarning($"⚠️ PickingRouteID PP* '{bl.PickingRouteId}', utilisation TransRefId: {bl.TransRefId}");
+                return bl.TransRefId;
+            }
+
+            return bl.PickingRouteId;
         }
 
         /// <summary>
