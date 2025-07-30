@@ -9,6 +9,7 @@ using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using DynamicsApiToDatabase.Models;
+using System.Data;
 
 namespace DynamicsApiToDatabase.Services
 {

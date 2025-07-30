@@ -13,6 +13,19 @@ using System.Data;
 
 namespace DynamicsApiToDatabase.Services
 {
+
+
+    /// <summary>
+    /// Interface pour le service JsonOut
+    /// </summary>
+    public interface IJsonOutService
+    {
+        Task LogItemArrivalJournalAsync(string journalNumber, string packingSlipId, string jsonData, string destination, string errorMessage = "");
+        Task<bool> EnsureImportIdColumnExistsAsync();
+        Task LogBLExportAsync(string blNumber, string jsonData, string destination, string clientCode = "BR", string errorMessage = "", string importId = "");
+        Task<string> GenerateJsonOutReportAsync();
+    }
+
     /// <summary>
     /// Service pour enregistrer les envois JSON dans JSON_OUT
     /// Structure étendue: JSON_KEYU, JSON_CRDA, JSON_DEST, JSON_CCLI, JSON_DATA, JSON_TRTP, JSON_TRDA, JSON_TREN, JSON_IMPORT_ID

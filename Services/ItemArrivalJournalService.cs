@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging;
 using DynamicsApiToDatabase.Models;
 using DynamicsApiToDatabase.Services;
 
+
 namespace DynamicsApiToDatabase.Services
 {
     public interface IItemArrivalJournalService
@@ -238,6 +239,9 @@ namespace DynamicsApiToDatabase.Services
                 return result;
             }
         }
+
+
+        
 
         /// <summary>
         /// Envoie les en-têtes du journal (1er POST)
