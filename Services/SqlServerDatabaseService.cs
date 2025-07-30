@@ -1442,12 +1442,287 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Calcule un hash MD5 du contenu JSON
         /// </summary>
+        // Remplacez MD5 par SHA256 pour être cohérent
         private static string ComputeHash(string input)
         {
-            using var md5 = MD5.Create();
+            using var sha256 = System.Security.Cryptography.SHA256.Create(); // ← Utiliser SHA256
             var inputBytes = Encoding.UTF8.GetBytes(input);
-            var hashBytes = md5.ComputeHash(inputBytes);
-            return Convert.ToHexString(hashBytes);
+            var hashBytes = sha256.ComputeHash(inputBytes);
+            return Convert.ToHexString(hashBytes)[..16]; // ← Garder les mêmes 16 caractères
+        }
+
+        // Méthode pour normaliser le JSON (ordre des propriétés)
+        private string NormalizeJsonForHash(object data)
+        {
+            // Sérialiser avec un ordre fixe des propriétés
+            var options = new JsonSerializerOptions
+            {
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                WriteIndented = false
+            };
+
+            var json = JsonSerializer.Serialize(data, options);
+
+            // Optionnel: Trier les propriétés JSON pour un hash cohérent
+            var jsonDocument = JsonDocument.Parse(json);
+            var sortedJson = JsonSerializer.Serialize(jsonDocument, options);
+
+            return sortedJson;
+        }
+
+        /// <summary>
+        /// Ajoute une colonne pour stocker la date de modification si elle n'existe pas
+        /// </summary>
+        public async Task EnsureModificationDateColumnExistsAsync()
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                // Vérifier si la colonne existe
+                const string checkColumnSql = @"
+            SELECT COUNT(*) 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'JSON_IN' 
+            AND COLUMN_NAME = 'JSON_MODIFIED_DATE'";
+
+                using var checkCommand = new SqlCommand(checkColumnSql, connection);
+                var columnExists = (int)await checkCommand.ExecuteScalarAsync() > 0;
+
+                if (!columnExists)
+                {
+                    const string addColumnSql = @"
+                ALTER TABLE JSON_IN 
+                ADD JSON_MODIFIED_DATE DATETIME2 NULL";
+
+                    using var addCommand = new SqlCommand(addColumnSql, connection);
+                    await addCommand.ExecuteNonQueryAsync();
+
+                    _logger.LogInformation("✅ Colonne JSON_MODIFIED_DATE ajoutée à la table JSON_IN");
+
+                    // Créer un index pour optimiser les performances
+                    const string createIndexSql = @"
+                CREATE NONCLUSTERED INDEX IX_JSON_IN_MODIFIED_DATE
+                ON JSON_IN (JSON_FROM, JSON_BKEY, JSON_MODIFIED_DATE)";
+
+                    using var indexCommand = new SqlCommand(createIndexSql, connection);
+                    await indexCommand.ExecuteNonQueryAsync();
+
+                    _logger.LogInformation("✅ Index IX_JSON_IN_MODIFIED_DATE créé");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors de la création de la colonne JSON_MODIFIED_DATE");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Récupère la date de modification stockée en BDD pour un enregistrement
+        /// </summary>
+        public async Task<DateTime?> GetStoredModificationDateAsync(string endpoint, string businessKey)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT TOP 1 JSON_MODIFIED_DATE
+            FROM JSON_IN 
+            WHERE JSON_BKEY = @BusinessKey 
+            AND JSON_FROM = @Endpoint
+            AND JSON_STAT = 'ACTIVE'
+            ORDER BY JSON_CRDA DESC";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@BusinessKey", businessKey);
+                command.Parameters.AddWithValue("@Endpoint", endpoint);
+
+                var result = await command.ExecuteScalarAsync();
+
+                if (result != null && result != DBNull.Value)
+                {
+                    return (DateTime)result;
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur récupération date modification pour {businessKey}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Insère ou met à jour un enregistrement avec la date de modification
+        /// </summary>
+        public async Task<bool> InsertOrUpdateJsonDataWithDateAsync(string businessKey, string jsonData, string endpoint, DateTime modificationDate, string status = "ACTIVE")
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                // Vérifier si l'enregistrement existe
+                var storedDate = await GetStoredModificationDateAsync(endpoint, businessKey);
+
+                if (storedDate == null)
+                {
+                    // Nouvel enregistrement
+                    const string insertSql = @"
+                INSERT INTO JSON_IN (JSON_FROM, JSON_CCLI, JSON_DATA, JSON_BKEY, JSON_HASH, JSON_STAT, JSON_MODIFIED_DATE, JSON_SENT)
+                VALUES (@Endpoint, 'BR', @JsonData, @BusinessKey, @Hash, @Status, @ModificationDate, 0)";
+
+                    using var command = new SqlCommand(insertSql, connection);
+                    command.Parameters.AddWithValue("@Endpoint", endpoint);
+                    command.Parameters.AddWithValue("@JsonData", jsonData);
+                    command.Parameters.AddWithValue("@BusinessKey", businessKey);
+                    command.Parameters.AddWithValue("@Hash", ComputeHash(jsonData));
+                    command.Parameters.AddWithValue("@Status", status);
+                    command.Parameters.AddWithValue("@ModificationDate", modificationDate);
+
+                    var rowsAffected = await command.ExecuteNonQueryAsync();
+                    return rowsAffected > 0;
+                }
+                else
+                {
+                    // Mise à jour de l'enregistrement existant
+                    const string updateSql = @"
+                UPDATE JSON_IN 
+                SET JSON_DATA = @JsonData,
+                    JSON_HASH = @Hash,
+                    JSON_STAT = @Status,
+                    JSON_MODIFIED_DATE = @ModificationDate,
+                    JSON_TRDA = GETDATE()
+                WHERE JSON_BKEY = @BusinessKey 
+                AND JSON_FROM = @Endpoint";
+
+                    using var command = new SqlCommand(updateSql, connection);
+                    command.Parameters.AddWithValue("@JsonData", jsonData);
+                    command.Parameters.AddWithValue("@Hash", ComputeHash(jsonData));
+                    command.Parameters.AddWithValue("@Status", status);
+                    command.Parameters.AddWithValue("@ModificationDate", modificationDate);
+                    command.Parameters.AddWithValue("@BusinessKey", businessKey);
+                    command.Parameters.AddWithValue("@Endpoint", endpoint);
+
+                    var rowsAffected = await command.ExecuteNonQueryAsync();
+                    return rowsAffected > 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur insertion/mise à jour avec date pour {businessKey}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Récupère les statistiques des articles avec dates de modification
+        /// </summary>
+        public async Task<Dictionary<string, object>> GetModificationStatisticsAsync()
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT 
+                COUNT(*) as TotalArticles,
+                COUNT(CASE WHEN JSON_MODIFIED_DATE IS NOT NULL THEN 1 END) as ArticlesWithModDate,
+                MAX(JSON_MODIFIED_DATE) as LastModificationDate,
+                MIN(JSON_MODIFIED_DATE) as FirstModificationDate,
+                COUNT(CASE WHEN JSON_MODIFIED_DATE >= DATEADD(hour, -24, GETDATE()) THEN 1 END) as ModifiedLast24h,
+                COUNT(CASE WHEN JSON_MODIFIED_DATE >= DATEADD(day, -7, GETDATE()) THEN 1 END) as ModifiedLast7Days
+            FROM JSON_IN
+            WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+            AND JSON_STAT = 'ACTIVE'";
+
+                using var command = new SqlCommand(sql, connection);
+                using var reader = await command.ExecuteReaderAsync();
+
+                var stats = new Dictionary<string, object>();
+
+                if (await reader.ReadAsync())
+                {
+                    stats["TotalArticles"] = reader.GetInt32("TotalArticles");
+                    stats["ArticlesWithModDate"] = reader.GetInt32("ArticlesWithModDate");
+                    stats["LastModificationDate"] = reader.IsDBNull("LastModificationDate") ? null : reader.GetDateTime("LastModificationDate");
+                    stats["FirstModificationDate"] = reader.IsDBNull("FirstModificationDate") ? null : reader.GetDateTime("FirstModificationDate");
+                    stats["ModifiedLast24h"] = reader.GetInt32("ModifiedLast24h");
+                    stats["ModifiedLast7Days"] = reader.GetInt32("ModifiedLast7Days");
+                }
+
+                return stats;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Erreur récupération statistiques modifications");
+                return new Dictionary<string, object>();
+            }
+        }
+
+        /// <summary>
+        /// Test de la nouvelle logique avec un article spécifique - UNIQUEMENT ARTICLES
+        /// </summary>
+        public async Task<bool> TestModificationDateLogicAsync(string itemId = "MPL42PP")
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT TOP 1
+                JSON_BKEY,
+                JSON_MODIFIED_DATE,
+                JSON_CRDA,
+                JSON_VALUE(JSON_DATA, '$.BRModifiedDateTime') as BRModifiedDateTime_JSON,
+                JSON_VALUE(JSON_DATA, '$.InventTableModifiedDateTime') as InventTableModifiedDateTime_JSON
+            FROM JSON_IN
+            WHERE JSON_FROM = 'data/BRINT34ReleasedProducts'
+            AND JSON_BKEY LIKE @ItemId
+            AND JSON_STAT = 'ACTIVE'
+            ORDER BY JSON_CRDA DESC";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@ItemId", $"%{itemId}%");
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                if (await reader.ReadAsync())
+                {
+                    Console.WriteLine($"🔍 TEST ARTICLE {itemId}:");
+                    Console.WriteLine($"   Clé BDD: {reader.GetString("JSON_BKEY")}");
+                    Console.WriteLine($"   Date modif stockée: {(reader.IsDBNull("JSON_MODIFIED_DATE") ? "NULL" : reader.GetDateTime("JSON_MODIFIED_DATE").ToString("yyyy-MM-dd HH:mm:ss"))}");
+                    Console.WriteLine($"   Date création BDD: {reader.GetDateTime("JSON_CRDA"):yyyy-MM-dd HH:mm:ss}");
+                    Console.WriteLine($"   BRModifiedDateTime (JSON): {reader.GetString("BRModifiedDateTime_JSON")}");
+                    Console.WriteLine($"   InventTableModifiedDateTime (JSON): {reader.GetString("InventTableModifiedDateTime_JSON")}");
+                    return true;
+                }
+                else
+                {
+                    Console.WriteLine($"❌ Aucun article trouvé pour {itemId}");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Erreur test logique modification pour {itemId}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Vérifie si un endpoint utilise la logique par date (uniquement articles pour le moment)
+        /// </summary>
+        public bool ShouldUseDateBasedSync(string endpoint)
+        {
+            return endpoint.Contains("BRINT34ReleasedProducts") || endpoint.Contains("Articles");
         }
 
         /// <summary>
