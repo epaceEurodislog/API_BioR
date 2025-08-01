@@ -1,6 +1,6 @@
 // Fichier: Services/REEDataService.cs
 // Service d'accès aux données REE_DAT pour les journaux de réception
-// Équivalent de SpeedWmsDataService.cs pour les données de réception
+// VERSION FINALE COMPLÈTE avec les VRAIS noms de colonnes SpeedWMS
 
 using System;
 using System.Collections.Generic;
@@ -22,7 +22,7 @@ namespace DynamicsApiToDatabase.Services
 
     /// <summary>
     /// Service pour récupérer les données de réception depuis REE_DAT, MVT_DAT, REL_DAT
-    /// Structure basée sur le mapping fourni pour ItemArrivalJournal
+    /// AVEC LES VRAIS NOMS DE COLONNES SpeedWMS
     /// </summary>
     public class REEDataService : IREEDataService
     {
@@ -35,10 +35,6 @@ namespace DynamicsApiToDatabase.Services
                 ?? throw new ArgumentNullException("SpeedWmsConnection manquante");
             _logger = logger;
         }
-
-        /// <summary>
-        /// Récupère tous les journaux de réception en attente de traitement
-        /// </summary>
         public async Task<List<ItemArrivalJournalData>> GetPendingJournalsAsync()
         {
             var journals = new List<ItemArrivalJournalData>();
@@ -49,27 +45,32 @@ namespace DynamicsApiToDatabase.Services
                 await connection.OpenAsync();
 
                 _logger.LogInformation("🔍 Récupération des journaux de réception en attente...");
-
-                // Requête principale pour récupérer les données REE_DAT avec leurs mouvements
                 const string sql = @"
-                    SELECT DISTINCT
-                        REE.REE_NOREIN,
-                        REE.REE_DARE,
-                        REE.REE_ETRE,
-                        REE.ACT_CODE,
-                        REE.REE_CCLI,
-                        REE.QUA_CODE,
-                        MVT.REA_RFCE,
-                        MVT.REA_RFTI,
-                        MVT.NoLR
-                    FROM REE_DAT REE
-                    INNER JOIN MVT_DAT MVT ON REE.REE_KEYU = MVT.REE_KEYU
-                    WHERE REE.REE_ETRE = '200'
-                      AND REE.REE_NOREIN IS NOT NULL
-                      AND REE.REE_NOREIN != ''
-                      AND MVT.REA_RFTI IS NOT NULL
-                      AND MVT.REA_RFTI != ''
-                    ORDER BY REE.REE_DARE DESC, REE.REE_NOREIN";
+            SELECT DISTINCT
+                REE.REE_NORE,                      -- PackingSlipId
+                REL.REA_RFCE,                      -- DefaultTransactionReferenceNumber (était MVT.REA_RFTI)
+                REE.REE_DARE,                      -- TransactionDate
+                REL.REL_NORL,                      -- LineNumber (était MVT.NoLR)
+                REL.ART_CODE,                      -- ItemNumber
+                REL.ART_QTEU,                      -- ItemQuantity (était ART_QTEUB)
+                REL.REL_LOT1,                      -- ItemBatchNumber
+                REL.REL_DLUO,                      -- ExpDate
+                REL.REL_LOT2,                      -- ItemSerialNumber
+                REE.REE_ETRE,                      -- Status
+                REE.ACT_CODE,                      -- ActivityCode
+                REE.REE_CCLI,                      -- DefaultReceivingWarehouseId
+                REL.QUA_CODE                       -- ReceivingInventoryStatusId
+            FROM REE_DAT REE
+            INNER JOIN REL_DAT REL ON REE.REE_KEYU = REL.REE_KEYU
+             WHERE 1=1
+			  AND REE.ACT_CODE = 'COSMETIQUE'
+              AND REE.REE_NORE IS NOT NULL
+              AND REE.REE_NORE != ''
+              AND REL.REA_RFCE IS NOT NULL
+              AND REL.REA_RFCE != ''
+              AND REL.ART_CODE IS NOT NULL
+              AND REL.ART_CODE != ''
+            ORDER BY REE.REE_DARE DESC, REE.REE_NORE";
 
                 using var command = new SqlCommand(sql, connection);
                 using var reader = await command.ExecuteReaderAsync();
@@ -78,40 +79,59 @@ namespace DynamicsApiToDatabase.Services
 
                 while (await reader.ReadAsync())
                 {
-                    var packingSlipId = SafeGetString(reader, "REE_NOREIN");
-                    var transactionRefNumber = SafeGetString(reader, "REA_RFTI");
+                    var packingSlipId = SafeGetString(reader, "REE_NORE");          // PackingSlipId
+                    var transactionRefNumber = SafeGetString(reader, "REA_RFCE");   // DefaultTransactionReferenceNumber
+                    var lineNumber = SafeGetInt(reader, "REL_NORL");                // LineNumber
 
-                    // Clé unique basée sur PackingSlipId + TransactionReferenceNumber
+                    if (string.IsNullOrEmpty(packingSlipId) || string.IsNullOrEmpty(transactionRefNumber))
+                    {
+                        continue;
+                    }
+
                     var journalKey = $"{packingSlipId}_{transactionRefNumber}";
 
                     if (!journalDict.ContainsKey(journalKey))
                     {
                         var journal = new ItemArrivalJournalData
                         {
-                            JournalNumber = await GenerateJournalNumberAsync(connection),
-                            PackingSlipId = packingSlipId,
-                            TransactionReferenceNumber = transactionRefNumber,
-                            TransactionDate = SafeGetDateTime(reader, "REE_DARE"),
-                            DataAreaId = "BR",
-                            JournalNameId = "ARR",
-                            DefaultReceivingSiteId = "S01",
-                            DefaultReceivingWarehouseId = "12",
-                            DefaultReceivingWarehouseLocationId = "RECNOLP"
+                            JournalNumber = await GenerateJournalNumberAsync(connection),  // JournalNumber
+                            PackingSlipId = packingSlipId,                                 // REE_NORE
+                            TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
+                            TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE
+                            DataAreaId = "BR",                                             // DataAreaId (fixe)
+                            JournalNameId = "ARR",                                         // JournalNameId (fixe)
+                            DefaultReceivingSiteId = "S01",                                // DefaultReceivingSiteId (fixe)
+                            DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
+                            DefaultReceivingWarehouseLocationId = "RECNOLP"                // DefaultReceivingWarehouseLocationId (fixe)
                         };
 
                         journalDict[journalKey] = journal;
                     }
 
-                    // Ajouter les informations de mouvement au journal
-                    var noLR = SafeGetInt(reader, "NoLR");
-                    if (noLR > 0)
+                    // Ajouter la ligne d'article
+                    var line = new ItemArrivalJournalLine
                     {
-                        await AddJournalLinesAsync(connection, journalDict[journalKey], noLR,
-                            SafeGetString(reader, "QUA_CODE"));
+                        LineNumber = lineNumber,                                           // REL_NORL
+                        ItemNumber = SafeGetString(reader, "ART_CODE"),                   // ART_CODE
+                        ItemQuantity = SafeGetLong(reader, "ART_QTEU"),                   // ART_QTEU
+                        ItemBatchNumber = SafeGetString(reader, "REL_LOT1"),              // REL_LOT1
+                        ExpDate = SafeGetNullableDateTime(reader, "REL_DLUO"),            // REL_DLUO
+                        ItemSerialNumber = SafeGetString(reader, "REL_LOT2"),             // REL_LOT2
+                        ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
+                            SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
+                    };
+
+                    if (!string.IsNullOrEmpty(line.ItemNumber) && line.ItemQuantity > 0)
+                    {
+                        journalDict[journalKey].Lines.Add(line);
                     }
                 }
 
                 journals.AddRange(journalDict.Values);
+
+                // Supprimer les journaux sans lignes
+                journals.RemoveAll(j => j.Lines.Count == 0);
+
                 _logger.LogInformation($"✅ {journals.Count} journaux de réception récupérés");
 
                 return journals;
@@ -124,80 +144,30 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Ajoute les lignes d'articles à un journal basées sur NoLR
+        /// ✅ Mapping du code qualité SpeedWMS vers le statut d'inventaire Dynamics
         /// </summary>
-        private async Task AddJournalLinesAsync(SqlConnection connection, ItemArrivalJournalData journal,
-            int noLR, string quaCode)
+        private string MapQualityCodeToInventoryStatus(string qualityCode)
         {
-            try
+            return qualityCode?.ToUpper() switch
             {
-                const string linesSql = @"
-                    SELECT 
-                        REL.ART_CODE,
-                        SUM(REL.ART_QTEUB) as TOTAL_QTE,    -- Cumul par NoLR selon RG1
-                        REL.REL_LOT1,
-                        REL.REL_DLUO,
-                        REL.REL_LOT2
-                    FROM REL_DAT REL
-                    WHERE REL.NoLR = @NoLR
-                      AND REL.ART_CODE IS NOT NULL
-                      AND REL.ART_CODE != ''
-                    GROUP BY REL.ART_CODE, REL.REL_LOT1, REL.REL_DLUO, REL.REL_LOT2
-                    ORDER BY REL.ART_CODE";
-
-                using var linesCommand = new SqlCommand(linesSql, connection);
-                linesCommand.Parameters.AddWithValue("@NoLR", noLR);
-
-                using var linesReader = await linesCommand.ExecuteReaderAsync();
-
-                while (await linesReader.ReadAsync())
-                {
-                    var line = new ItemArrivalJournalLine
-                    {
-                        LineNumber = noLR,
-                        ItemNumber = SafeGetString(linesReader, "ART_CODE"),
-                        ItemQuantity = SafeGetLong(linesReader, "TOTAL_QTE"),
-                        ItemBatchNumber = SafeGetString(linesReader, "REL_LOT1"),
-                        ItemSerialNumber = SafeGetString(linesReader, "REL_LOT2"),
-                        ExpDate = SafeGetNullableDateTime(linesReader, "REL_DLUO"),
-                        ReceivingInventoryStatusId = QualityCodeMapper.MapToInventoryStatus(quaCode)
-                    };
-
-                    journal.Lines.Add(line);
-                }
-
-                _logger.LogDebug($"📄 {journal.Lines.Count} lignes ajoutées pour journal {journal.PackingSlipId}");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"❌ Erreur lors de l'ajout des lignes pour NoLR {noLR}");
-                journal.HasErrors = true;
-                journal.ErrorMessages.Add($"Erreur lignes NoLR {noLR}: {ex.Message}");
-            }
+                "OK" => "Available",
+                "NOK" => "Blocked",
+                "QUAR" => "QuarantineOrdered",
+                "QUARANTINE" => "QuarantineOrdered",
+                "BLOCKED" => "Blocked",
+                _ => "Available" // Par défaut
+            };
         }
 
         /// <summary>
-        /// Génère un numéro de journal unique
+        /// ✅ Génère un numéro de journal unique
         /// </summary>
         private async Task<string> GenerateJournalNumberAsync(SqlConnection connection)
         {
             try
             {
-                // Logique de génération de numéro de journal
-                // Exemple : JA + année + mois + séquence
                 var datePrefix = DateTime.Now.ToString("yyyyMM");
-
-                const string countSql = @"
-                    SELECT COUNT(*) 
-                    FROM JSON_OUT 
-                    WHERE JSON_DEST = 'ItemArrivalHeaders'
-                      AND JSON_CRDA >= @StartOfMonth";
-
-                using var countCommand = new SqlCommand(countSql, connection);
-                countCommand.Parameters.AddWithValue("@StartOfMonth", new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1));
-
-                var count = (int)await countCommand.ExecuteScalarAsync() + 1;
-                var journalNumber = $"JA{datePrefix}{count:D4}";
+                var journalNumber = $"JA{datePrefix}{DateTime.Now:ddHHmmss}";
 
                 _logger.LogDebug($"📝 Numéro de journal généré: {journalNumber}");
                 return journalNumber;
@@ -210,7 +180,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Analyse la structure des tables REE_DAT, MVT_DAT, REL_DAT
+        /// ✅ Analyse la structure des tables avec les VRAIS noms de colonnes
         /// </summary>
         public async Task<string> AnalyzeREEStructureAsync()
         {
@@ -221,28 +191,63 @@ namespace DynamicsApiToDatabase.Services
 
                 var report = "📊 === ANALYSE STRUCTURE REE/MVT/REL === 📊\n\n";
 
-                // Tester les tables de réception
                 var tablesToTest = new[] { "REE_DAT", "MVT_DAT", "REL_DAT" };
 
                 foreach (var tableName in tablesToTest)
                 {
-                    report += await AnalyzeTableStructureAsync(connection, tableName);
+                    report += await GetTableStructureAsync(connection, tableName);
                     report += "\n";
                 }
 
-                _logger.LogInformation("✅ Analyse structure REE terminée");
+                // ✅ TEST AVEC LES VRAIS NOMS DE COLONNES
+                report += "🔍 TEST DONNÉES AVEC VRAIS NOMS DE COLONNES:\n";
+                try
+                {
+                    const string testSql = @"
+                        SELECT TOP 3
+                            REE.REE_NORE as PackingSlipId,
+                            REE.REE_DARE as TransactionDate,
+                            REE.REE_ETRE as Status,
+                            REE.QUA_CODE as QualityCode,
+                            MVT.REA_RFTI as TransactionRef,
+                            MVT.NoLR as LineNumber
+                        FROM REE_DAT REE
+                        LEFT JOIN MVT_DAT MVT ON REE.REE_KEYU = MVT.REE_KEYU
+                        WHERE REE.REE_NORE IS NOT NULL
+                        ORDER BY REE.REE_KEYU DESC";
+
+                    using var testCommand = new SqlCommand(testSql, connection);
+                    using var testReader = await testCommand.ExecuteReaderAsync();
+
+                    while (await testReader.ReadAsync())
+                    {
+                        var packingSlip = SafeGetString(testReader, "PackingSlipId");
+                        var transactionRef = SafeGetString(testReader, "TransactionRef");
+                        var status = SafeGetString(testReader, "Status");
+                        var qualityCode = SafeGetString(testReader, "QualityCode");
+
+                        report += $"   PackingSlip: {packingSlip} | TransactionRef: {transactionRef} | Status: {status} | Quality: {qualityCode}\n";
+                    }
+
+                    report += "✅ Test réussi avec les vrais noms de colonnes\n";
+                }
+                catch (Exception testEx)
+                {
+                    report += $"❌ Erreur test données: {testEx.Message}\n";
+                }
+
                 return report;
             }
             catch (Exception ex)
             {
                 var errorReport = $"❌ Erreur analyse structure REE: {ex.Message}";
-                _logger.LogError(ex, "❌ Erreur lors de l'analyse de structure REE");
+                _logger.LogError(ex, errorReport);
                 return errorReport;
             }
         }
 
         /// <summary>
-        /// Diagnostic des tables REE avec exemples de données
+        /// ✅ Diagnostic des tables REE avec exemples de données réelles
         /// </summary>
         public async Task<string> DiagnoseREETablesAsync()
         {
@@ -253,24 +258,24 @@ namespace DynamicsApiToDatabase.Services
 
                 var report = "🔍 === DIAGNOSTIC TABLES REE === 🔍\n\n";
 
-                // Test de jointure REE_DAT -> MVT_DAT -> REL_DAT
+                // ✅ Test jointure complète avec les vrais noms
                 try
                 {
                     const string joinTestSql = @"
                         SELECT TOP 5
                             REE.REE_KEYU,
-                            REE.REE_NOREIN,
-                            REE.REE_DARE,
-                            REE.QUA_CODE,
-                            MVT.REA_RFCE,
-                            MVT.REA_RFTI,
-                            MVT.NoLR,
-                            REL.ART_CODE,
-                            REL.ART_QTEUB
+                            REE.REE_NORE as PackingSlipId,
+                            REE.REE_DARE as TransactionDate,
+                            REE.QUA_CODE as QualityCode,
+                            MVT.REA_RFCE as DefaultTransactionRef,
+                            MVT.REA_RFTI as TransactionRef,
+                            MVT.NoLR as LineNumber,
+                            REL.ART_CODE as ItemCode,
+                            REL.ART_QTEU as ItemQuantity
                         FROM REE_DAT REE
                         LEFT JOIN MVT_DAT MVT ON REE.REE_KEYU = MVT.REE_KEYU
                         LEFT JOIN REL_DAT REL ON MVT.NoLR = REL.NoLR
-                        WHERE REE.REE_NOREIN IS NOT NULL
+                        WHERE REE.REE_NORE IS NOT NULL
                         ORDER BY REE.REE_KEYU DESC";
 
                     using var joinCommand = new SqlCommand(joinTestSql, connection);
@@ -281,14 +286,16 @@ namespace DynamicsApiToDatabase.Services
                     while (await joinReader.ReadAsync())
                     {
                         var reeKeyu = SafeGetInt(joinReader, "REE_KEYU");
-                        var packingSlip = SafeGetString(joinReader, "REE_NOREIN");
-                        var orderRef = SafeGetString(joinReader, "REA_RFTI");
-                        var artCode = SafeGetString(joinReader, "ART_CODE");
-                        var quantity = SafeGetLong(joinReader, "ART_QTEUB");
+                        var packingSlip = SafeGetString(joinReader, "PackingSlipId");
+                        var transactionRef = SafeGetString(joinReader, "TransactionRef");
+                        var itemCode = SafeGetString(joinReader, "ItemCode");
+                        var quantity = SafeGetLong(joinReader, "ItemQuantity");
 
-                        report += $"   REE_KEYU={reeKeyu}, PackingSlip={packingSlip}, Order={orderRef}, " +
-                                 $"Article={artCode}, Qty={quantity}\n";
+                        report += $"   REE_KEYU={reeKeyu}, PackingSlip={packingSlip}, TransactionRef={transactionRef}, " +
+                                 $"Item={itemCode}, Qty={quantity}\n";
                     }
+
+                    report += "✅ Test jointure réussi\n";
                 }
                 catch (Exception ex)
                 {
@@ -300,110 +307,24 @@ namespace DynamicsApiToDatabase.Services
             catch (Exception ex)
             {
                 var errorReport = $"❌ Erreur diagnostic REE: {ex.Message}";
-                _logger.LogError(ex, "❌ Erreur lors du diagnostic REE");
+                _logger.LogError(ex, errorReport);
                 return errorReport;
             }
         }
 
-        /// <summary>
-        /// Analyse la structure d'une table spécifique
-        /// </summary>
-        private async Task<string> AnalyzeTableStructureAsync(SqlConnection connection, string tableName)
-        {
-            try
-            {
-                // Vérifier si la table existe
-                const string tableExistsSql = @"
-                    SELECT COUNT(*) 
-                    FROM INFORMATION_SCHEMA.TABLES 
-                    WHERE TABLE_NAME = @TableName";
-
-                using var tableExistsCommand = new SqlCommand(tableExistsSql, connection);
-                tableExistsCommand.Parameters.AddWithValue("@TableName", tableName);
-                var tableExists = (int)await tableExistsCommand.ExecuteScalarAsync() > 0;
-
-                if (!tableExists)
-                {
-                    return $"❌ Table {tableName}: N'EXISTE PAS";
-                }
-
-                // Récupérer la structure des colonnes
-                const string columnsSql = @"
-                    SELECT 
-                        COLUMN_NAME,
-                        DATA_TYPE,
-                        IS_NULLABLE,
-                        ISNULL(CHARACTER_MAXIMUM_LENGTH, 0) as MAX_LENGTH
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_NAME = @TableName
-                    ORDER BY ORDINAL_POSITION";
-
-                using var columnsCommand = new SqlCommand(columnsSql, connection);
-                columnsCommand.Parameters.AddWithValue("@TableName", tableName);
-
-                var tableReport = $"✅ Table {tableName}:\n";
-
-                using var reader = await columnsCommand.ExecuteReaderAsync();
-                var columnCount = 0;
-
-                while (await reader.ReadAsync())
-                {
-                    columnCount++;
-                    var columnName = reader.GetString("COLUMN_NAME");
-                    var dataType = reader.GetString("DATA_TYPE");
-                    var isNullable = reader.GetString("IS_NULLABLE");
-                    var maxLength = reader.GetInt32("MAX_LENGTH");
-
-                    var nullableStr = isNullable == "YES" ? "NULL" : "NOT NULL";
-                    var lengthStr = maxLength > 0 ? $"({maxLength})" : "";
-
-                    tableReport += $"   {columnName,-25} {dataType}{lengthStr,-15} {nullableStr}\n";
-                }
-
-                tableReport += $"   Total: {columnCount} colonnes\n";
-                return tableReport;
-            }
-            catch (Exception ex)
-            {
-                return $"❌ Erreur analyse table {tableName}: {ex.Message}\n";
-            }
-        }
-
-        // Méthodes utilitaires pour la lecture sécurisée des données
+        // ==========================================
+        // MÉTHODES UTILITAIRES POUR LECTURE SÉCURISÉE
+        // ==========================================
 
         private static string SafeGetString(SqlDataReader reader, string columnName)
         {
             try
             {
-                return reader.IsDBNull(columnName) ? "" : reader.GetString(columnName).Trim();
+                return reader.IsDBNull(columnName) ? "" : reader.GetString(columnName);
             }
             catch
             {
                 return "";
-            }
-        }
-
-        private static int SafeGetInt(SqlDataReader reader, string columnName)
-        {
-            try
-            {
-                return reader.IsDBNull(columnName) ? 0 : reader.GetInt32(columnName);
-            }
-            catch
-            {
-                return 0;
-            }
-        }
-
-        private static long SafeGetLong(SqlDataReader reader, string columnName)
-        {
-            try
-            {
-                return reader.IsDBNull(columnName) ? 0 : reader.GetInt64(columnName);
-            }
-            catch
-            {
-                return 0;
             }
         }
 
@@ -428,6 +349,90 @@ namespace DynamicsApiToDatabase.Services
             catch
             {
                 return null;
+            }
+        }
+
+        private static int SafeGetInt(SqlDataReader reader, string columnName)
+        {
+            try
+            {
+                if (reader.IsDBNull(columnName)) return 0;
+                var value = reader[columnName];
+                if (value is int intVal) return intVal;
+                if (int.TryParse(value.ToString(), out var parsedVal)) return parsedVal;
+                return 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static long SafeGetLong(SqlDataReader reader, string columnName)
+        {
+            try
+            {
+                if (reader.IsDBNull(columnName)) return 0;
+                var value = reader[columnName];
+                if (value is long longVal) return longVal;
+                if (value is int intVal) return intVal;
+                if (value is decimal decVal) return (long)decVal;
+                if (long.TryParse(value.ToString(), out var parsedVal)) return parsedVal;
+                return 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private async Task<string> GetTableStructureAsync(SqlConnection connection, string tableName)
+        {
+            try
+            {
+                const string tableExistsSql = @"
+                    SELECT COUNT(*) 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_NAME = @TableName";
+
+                using var tableExistsCommand = new SqlCommand(tableExistsSql, connection);
+                tableExistsCommand.Parameters.AddWithValue("@TableName", tableName);
+                var tableExists = (int)await tableExistsCommand.ExecuteScalarAsync() > 0;
+
+                if (!tableExists)
+                {
+                    return $"❌ Table {tableName}: N'EXISTE PAS";
+                }
+
+                const string columnsSql = @"
+                    SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = @TableName
+                    ORDER BY ORDINAL_POSITION";
+
+                using var columnsCommand = new SqlCommand(columnsSql, connection);
+                columnsCommand.Parameters.AddWithValue("@TableName", tableName);
+
+                var tableReport = $"✅ Table {tableName}:\n";
+                using var reader = await columnsCommand.ExecuteReaderAsync();
+
+                var columnCount = 0;
+                while (await reader.ReadAsync())
+                {
+                    columnCount++;
+                    var columnName = reader.GetString("COLUMN_NAME");
+                    var dataType = reader.GetString("DATA_TYPE");
+                    var isNullable = reader.GetString("IS_NULLABLE");
+
+                    tableReport += $"   {columnName,-25} {dataType,-15} {isNullable}\n";
+                }
+
+                tableReport += $"   Total: {columnCount} colonnes\n";
+                return tableReport;
+            }
+            catch (Exception ex)
+            {
+                return $"❌ Erreur analyse table {tableName}: {ex.Message}\n";
             }
         }
     }

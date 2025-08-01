@@ -474,28 +474,75 @@ namespace DynamicsApiToDatabase
             }
         }
 
-
-
         private static IServiceCollection ConfigureServices()
         {
-            var services = new ServiceCollection();
-
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-                .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
-                .AddEnvironmentVariables()
                 .Build();
 
+            var services = new ServiceCollection();
+
+            // Configuration
             services.AddSingleton<IConfiguration>(configuration);
-            services.AddApplicationLogging();
-            services.AddApplicationServices(configuration);
-            services.AddScoped<IREEDataService, REEDataService>();
-            services.AddScoped<IItemArrivalJournalService, ItemArrivalJournalService>();
+
+            // HttpClient
+            services.AddHttpClient();
+
+            // Logging
+            services.AddLogging(builder =>
+            {
+                builder.AddConsole();
+                builder.SetMinimumLevel(LogLevel.Information);
+            });
+
+            // ✅ SERVICES PRINCIPAUX - ORDRE IMPORTANT
+            services.AddSingleton<AuthenticationService>();
+            services.AddSingleton<SqlServerDatabaseService>();
+            services.AddSingleton<DynamicsDataService>();
+            services.AddSingleton<StatusConfirmationService>();
+
+            // ✅ CORRECTION CRITIQUE : Interface et implémentation
+            services.AddSingleton<IJsonOutService, JsonOutService>();
+            services.AddSingleton<JsonOutService>(); // Pour la compatibilité avec les appels directs
+
+            // ✅ SERVICES SPÉCIALISÉS
+            services.AddSingleton<IItemArrivalJournalService, ItemArrivalJournalService>();
+            services.AddSingleton<ExternalProgramLauncher>();
+
+            // ✅ SERVICES BLEXPORT (ajoutés si manquants)
+            services.AddSingleton<IREEDataService, REEDataService>(); // Service pour les données REE
+            services.AddSingleton<SpeedWmsDataService>(); // Service pour SpeedWMS
+            services.AddSingleton<BLExportService>(); // Service d'export BL
 
             return services;
         }
 
+        // ✅ MÉTHODE UTILITAIRE POUR VÉRIFIER LES SERVICES
+        private static void ValidateServices(ServiceProvider serviceProvider)
+        {
+            Console.WriteLine("🔍 Validation des services...");
+
+            try
+            {
+                // Test des services critiques
+                var authService = serviceProvider.GetService<AuthenticationService>();
+                var sqlService = serviceProvider.GetService<SqlServerDatabaseService>();
+                var jsonOutService = serviceProvider.GetService<IJsonOutService>();
+                var itemArrivalService = serviceProvider.GetService<IItemArrivalJournalService>();
+
+                if (authService == null) Console.WriteLine("❌ AuthenticationService manquant");
+                if (sqlService == null) Console.WriteLine("❌ SqlServerDatabaseService manquant");
+                if (jsonOutService == null) Console.WriteLine("❌ IJsonOutService manquant");
+                if (itemArrivalService == null) Console.WriteLine("❌ IItemArrivalJournalService manquant");
+
+                Console.WriteLine("✅ Validation des services terminée");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Erreur validation services: {ex.Message}");
+            }
+        }
         private static async Task DisplayConfigurationAsync(ServiceProvider serviceProvider)
         {
             var configuration = serviceProvider.GetService<IConfiguration>();

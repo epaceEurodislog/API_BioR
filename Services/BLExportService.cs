@@ -269,14 +269,14 @@ namespace DynamicsApiToDatabase.Services
                     {
                         result.Success = true;
                         result.Status = BLExportStatusConstants.Confirmed;
-                        await _jsonOutService.LogBLExportAsync(bl.BLNumber, bl.ImportId, "Données et confirmation envoyées", result.Status);
+                        await _jsonOutService.LogBLExportAsync(bl.BLNumber, "Données et confirmation envoyées", "BL_EXPORT", "BR", "", bl.ImportId);
                     }
                     else
                     {
                         result.Success = false;
                         result.Status = BLExportStatusConstants.PendingRetry;
                         result.ErrorMessage = "Confirmation échouée, en attente retry";
-                        await _jsonOutService.LogBLExportAsync(bl.BLNumber, bl.ImportId, "", result.Status, result.ErrorMessage);
+                        await _jsonOutService.LogBLExportAsync(bl.BLNumber, "", "BL_ERROR", "BR", result.ErrorMessage, bl.ImportId);
                     }
                 }
                 else
@@ -284,7 +284,7 @@ namespace DynamicsApiToDatabase.Services
                     // Si confirmation désactivée, considérer comme réussi après le 1er POST
                     result.Success = true;
                     result.Status = BLExportStatusConstants.Sent;
-                    await _jsonOutService.LogBLExportAsync(bl.BLNumber, bl.ImportId, "Données envoyées (confirmation désactivée)", result.Status);
+                    await _jsonOutService.LogBLExportAsync(bl.BLNumber, "Données envoyées (confirmation désactivée)", "BL_EXPORT", "BR", "", bl.ImportId);
                 }
 
                 result.ProcessingTime = DateTime.Now - startTime;
@@ -466,7 +466,7 @@ namespace DynamicsApiToDatabase.Services
                 if (allSuccess)
                 {
                     _logger.LogInformation($"✅ BL {bl.BLNumber}: {message}");
-                    await _jsonOutService.LogBLExportAsync(bl.BLNumber, bl.ImportId, message, BLExportStatusConstants.Sent);
+                    await _jsonOutService.LogBLExportAsync(bl.BLNumber, message, "BL_EXPORT", "BR", "", bl.ImportId);
                 }
                 else
                 {

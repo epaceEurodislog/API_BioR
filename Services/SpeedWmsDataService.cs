@@ -119,8 +119,10 @@ namespace DynamicsApiToDatabase.Services
             WHERE OPE_KEYU IS NOT NULL
             AND OPE_CRQI = 'INTERFACE'
             AND ACT_CODE = 'COSMETIQUE'
+            AND OPE_STAT = '070'  -- Seulement les BL en préparation (statut 070)
             -- 🧪 FILTRE TEST : Seulement OPE_ALPHA17 = PP000283
-            AND OPE_ALPHA17 = 'PP000283'
+            -- AND OPE_ALPHA17 in ('PP000285', 'PP000282')
+
             ORDER BY OPE_KEYU";
 
                 using var command = new SqlCommand(sql, connection);
@@ -184,7 +186,7 @@ namespace DynamicsApiToDatabase.Services
                 ISNULL(MIL.MIL_LOT2P, '') as MIL_LOT2P,             -- varchar(100)
                 ISNULL(MIL.MIL_SUPP, '') as MIL_SUPP                -- varchar(25)
             FROM MIL_DAT MIL
-            INNER JOIN OPE_DAT OPE ON MIL.OPE_NoOE = OPE.OPE_NoOE
+            INNER JOIN OPE_DAT OPE ON MIL.OPE_NoOE = OPE.OPE_NoOE and MIL.ACT_CODE = OPE.ACT_CODE
             WHERE OPE.OPE_KEYU = @OpeKeyu
             ORDER BY MIL.ART_CODE";
 
