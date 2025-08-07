@@ -39,107 +39,199 @@ namespace DynamicsApiToDatabase.Services
         {
             var journals = new List<ItemArrivalJournalData>();
 
-            try
+            using (var connection = new SqlConnection(_speedWmsConnectionString))
             {
-                using var connection = new SqlConnection(_speedWmsConnectionString);
-                await connection.OpenAsync();
-
-                _logger.LogInformation("🔍 Récupération des journaux de réception en attente...");
-                const string sql = @"
-            SELECT DISTINCT
-                REE.REE_NORE,                      -- PackingSlipId
-                REL.REA_RFCE,                      -- DefaultTransactionReferenceNumber (était MVT.REA_RFTI)
-                REE.REE_DARE,                      -- TransactionDate
-                REL.REL_NORL,                      -- LineNumber (était MVT.NoLR)
-                REL.ART_CODE,                      -- ItemNumber
-                REL.ART_QTEU,                      -- ItemQuantity (était ART_QTEUB)
-                REL.REL_LOT1,                      -- ItemBatchNumber
-                REL.REL_DLUO,                      -- ExpDate
-                REL.REL_LOT2,                      -- ItemSerialNumber
-                REE.REE_ETRE,                      -- Status
-                REE.ACT_CODE,                      -- ActivityCode
-                REE.REE_CCLI,                      -- DefaultReceivingWarehouseId
-                REL.QUA_CODE                       -- ReceivingInventoryStatusId
-            FROM REE_DAT REE
-            INNER JOIN REL_DAT REL ON REE.REE_KEYU = REL.REE_KEYU
-             WHERE 1=1
-			  AND REE.ACT_CODE = 'COSMETIQUE'
-              AND REE.REE_NORE IS NOT NULL
-              AND REE.REE_NORE != ''
-              AND REL.REA_RFCE IS NOT NULL
-              AND REL.REA_RFCE != ''
-              AND REL.ART_CODE IS NOT NULL
-              AND REL.ART_CODE != ''
-            ORDER BY REE.REE_DARE DESC, REE.REE_NORE";
-
-                using var command = new SqlCommand(sql, connection);
-                using var reader = await command.ExecuteReaderAsync();
-
-                var journalDict = new Dictionary<string, ItemArrivalJournalData>();
-
-                while (await reader.ReadAsync())
+                try
                 {
-                    var packingSlipId = SafeGetString(reader, "REE_NORE");          // PackingSlipId
-                    var transactionRefNumber = SafeGetString(reader, "REA_RFCE");   // DefaultTransactionReferenceNumber
-                    var lineNumber = SafeGetInt(reader, "REL_NORL");                // LineNumber
+                    // MODIFICATION RD 06/08/2025
+                    //await connection.OpenAsync();
 
-                    if (string.IsNullOrEmpty(packingSlipId) || string.IsNullOrEmpty(transactionRefNumber))
+                    _logger.LogInformation("🔍 Récupération des journaux de réception en attente...");
+                    const string sql = @"
+                        SELECT
+                            REE.REE_NORE,                      -- PackingSlipId
+                            REL.REA_RFCE,                      -- DefaultTransactionReferenceNumber (était MVT.REA_RFTI)
+                            REE.REE_DARE,                      -- TransactionDate
+                            REL.REL_NORL,                      -- LineNumber (était MVT.NoLR)
+                            REL.ART_CODE,                      -- ItemNumber
+                            REL.REL_QTRE,                      -- ItemQuantity (était ART_QTEUB)
+                            coalesce(REL.REL_LOT1,''),         -- ItemBatchNumber
+                            coalesce(REL.REL_DLUO,''),         -- ExpDate
+                            REL.REL_LOT2,                      -- ItemSerialNumber
+                            REE.REE_ETRE,                      -- Status
+                            REE.ACT_CODE,                      -- ActivityCode
+                            REE.REE_CCLI,                      -- DefaultReceivingWarehouseId
+                            REL.QUA_CODE                       -- ReceivingInventoryStatusId
+                        FROM 
+                            REE_DAT REE
+                        INNER JOIN 
+                            REL_DAT REL ON REE.ACT_CODE = REL.ACT_CODE and REE.REE_NORE = REL.REE_NORE and REE.REE_KEYU = REL.REE_KEYU
+                        WHERE 
+                            1=1
+                            AND REE.ACT_CODE = 'COSMETIQUE'
+                            AND REE.REE_NORE IS NOT NULL
+                            AND REE.REE_NORE != ''
+                            AND REL.REA_RFCE IS NOT NULL
+                            AND REL.REA_RFCE != ''
+                            AND REL.ART_CODE IS NOT NULL
+                            AND REL.ART_CODE != ''
+                            --AND REE.REE_NORE = 35
+                        ORDER BY 
+                            REE.REE_DARE DESC, REE.REE_NORE";
+
+                    //MODIFICATION RD 06/08/2025
+                    //using var command = new SqlCommand(sql, connection);
+
+                    //AJOUT RD 06/08/2025
+                    SqlCommand command = new SqlCommand(sql, connection);
+                    
+                    //AJOUT RD 06/08/2025
+                    _logger.LogInformation(_speedWmsConnectionString);
+                    _logger.LogInformation($"Statut de la connexion avant Open : {connection.State}");
+                    connection.Open();
+                    _logger.LogInformation($"Statut de la connexion après Open : {connection.State}");
+
+                    //MODIFICATION RD 06/08/2025
+                    //using var reader = await command.ExecuteReaderAsync();
+                    using (SqlDataReader reader = command.ExecuteReader())
                     {
-                        continue;
-                    }
+                        _logger.LogInformation("✅ Requête exécutée avec succès, lecture des données...");
 
-                    var journalKey = $"{packingSlipId}_{transactionRefNumber}";
+                        var journalDict = new Dictionary<string, ItemArrivalJournalData>();
 
-                    if (!journalDict.ContainsKey(journalKey))
-                    {
-                        var journal = new ItemArrivalJournalData
+                        while (reader.Read())
                         {
-                            JournalNumber = await GenerateJournalNumberAsync(connection),  // JournalNumber
-                            PackingSlipId = packingSlipId,                                 // REE_NORE
-                            TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
-                            TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE
-                            DataAreaId = "BR",                                             // DataAreaId (fixe)
-                            JournalNameId = "ARR",                                         // JournalNameId (fixe)
-                            DefaultReceivingSiteId = "S01",                                // DefaultReceivingSiteId (fixe)
-                            DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
-                            DefaultReceivingWarehouseLocationId = "RECNOLP"                // DefaultReceivingWarehouseLocationId (fixe)
-                        };
 
-                        journalDict[journalKey] = journal;
+                            var packingSlipId = SafeGetInt(reader, "REE_NORE");          // PackingSlipId
+                            var transactionRefNumber = SafeGetString(reader, "REA_RFCE");   // DefaultTransactionReferenceNumber
+                            var lineNumber = SafeGetInt(reader, "REL_NORL");                // LineNumber
+
+                            //MODIFICATION RD 06/08/2025
+                            //if (int.IsNullOrEmpty(packingSlipId) || string.IsNullOrEmpty(transactionRefNumber))
+                            if (packingSlipId == 0 || string.IsNullOrEmpty(transactionRefNumber))
+                            {
+                                continue;
+                            }
+
+                            var journalKey = $"{packingSlipId}_{transactionRefNumber}";
+
+                            if (!journalDict.ContainsKey(journalKey))
+                            {
+                                var journal = new ItemArrivalJournalData
+                                {
+                                    JournalNumber = await GenerateJournalNumberAsync(connection),       // JournalNumber
+                                    PackingSlipId = Convert.ToString(packingSlipId),                                 // REE_NORE
+                                    TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
+                                    TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE
+                                    DataAreaId = "BR",                                             // DataAreaId (fixe)
+                                    JournalNameId = "ARR",                                         // JournalNameId (fixe)
+                                    DefaultReceivingSiteId = "S01",                                // DefaultReceivingSiteId (fixe)
+                                    DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
+                                    DefaultReceivingWarehouseLocationId = "RECNOLP"                // DefaultReceivingWarehouseLocationId (fixe)
+                                };
+
+                                journalDict[journalKey] = journal;
+                            }
+
+                            // Ajouter la ligne d'article
+                            var line = new ItemArrivalJournalLine
+                            {
+                                LineNumber = lineNumber,                                           // REL_NORL
+                                ItemNumber = SafeGetString(reader, "ART_CODE"),                   // ART_CODE
+                                ItemQuantity = SafeGetLong(reader, "REL_QTRE"),                   // ART_QTEU
+                                ItemBatchNumber = SafeGetString(reader, "REL_LOT1"),              // REL_LOT1
+                                ExpDate = SafeGetNullableDateTime(reader, "REL_DLUO"),            // REL_DLUO
+                                ItemSerialNumber = SafeGetString(reader, "REL_LOT2"),             // REL_LOT2
+                                ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
+                                    SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
+                            };
+
+                            if (!string.IsNullOrEmpty(line.ItemNumber) && line.ItemQuantity > 0)
+                            {
+                                journalDict[journalKey].Lines.Add(line);
+                            }
+
+                        }
+
+                        journals.AddRange(journalDict.Values);
+
+                        string resultat = string.Join(", ", journalDict.Select(kv => $"{kv.Key}: {kv.Value}"));
+                        _logger.LogInformation(resultat);
+
+                        // Supprimer les journaux sans lignes
+                        journals.RemoveAll(j => j.Lines.Count == 0);
+
+                        _logger.LogInformation($"✅ {journals.Count} journaux de réception récupérés");
+
+                        return journals;
                     }
 
-                    // Ajouter la ligne d'article
-                    var line = new ItemArrivalJournalLine
-                    {
-                        LineNumber = lineNumber,                                           // REL_NORL
-                        ItemNumber = SafeGetString(reader, "ART_CODE"),                   // ART_CODE
-                        ItemQuantity = SafeGetLong(reader, "ART_QTEU"),                   // ART_QTEU
-                        ItemBatchNumber = SafeGetString(reader, "REL_LOT1"),              // REL_LOT1
-                        ExpDate = SafeGetNullableDateTime(reader, "REL_DLUO"),            // REL_DLUO
-                        ItemSerialNumber = SafeGetString(reader, "REL_LOT2"),             // REL_LOT2
-                        ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
-                            SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
-                    };
+                    // var journalDict = new Dictionary<string, ItemArrivalJournalData>();
 
-                    if (!string.IsNullOrEmpty(line.ItemNumber) && line.ItemQuantity > 0)
-                    {
-                        journalDict[journalKey].Lines.Add(line);
-                    }
+                    // while (await reader.ReadAsync())
+                    // {
+                    //     var packingSlipId = SafeGetString(reader, "REE_NORE");          // PackingSlipId
+                    //     var transactionRefNumber = SafeGetString(reader, "REA_RFCE");   // DefaultTransactionReferenceNumber
+                    //     var lineNumber = SafeGetInt(reader, "REL_NORL");                // LineNumber
+
+                    //     if (string.IsNullOrEmpty(packingSlipId) || string.IsNullOrEmpty(transactionRefNumber))
+                    //     {
+                    //         continue;
+                    //     }
+
+                    //     var journalKey = $"{packingSlipId}_{transactionRefNumber}";
+
+                    //     if (!journalDict.ContainsKey(journalKey))
+                    //     {
+                    //         var journal = new ItemArrivalJournalData
+                    //         {
+                    //             JournalNumber = await GenerateJournalNumberAsync(connection),  // JournalNumber
+                    //             PackingSlipId = packingSlipId,                                 // REE_NORE
+                    //             TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
+                    //             TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE
+                    //             DataAreaId = "BR",                                             // DataAreaId (fixe)
+                    //             JournalNameId = "ARR",                                         // JournalNameId (fixe)
+                    //             DefaultReceivingSiteId = "S01",                                // DefaultReceivingSiteId (fixe)
+                    //             DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
+                    //             DefaultReceivingWarehouseLocationId = "RECNOLP"                // DefaultReceivingWarehouseLocationId (fixe)
+                    //         };
+
+                    //         journalDict[journalKey] = journal;
+                    //     }
+
+                    //     // Ajouter la ligne d'article
+                    //     var line = new ItemArrivalJournalLine
+                    //     {
+                    //         LineNumber = lineNumber,                                           // REL_NORL
+                    //         ItemNumber = SafeGetString(reader, "ART_CODE"),                   // ART_CODE
+                    //         ItemQuantity = SafeGetLong(reader, "ART_QTEU"),                   // ART_QTEU
+                    //         ItemBatchNumber = SafeGetString(reader, "REL_LOT1"),              // REL_LOT1
+                    //         ExpDate = SafeGetNullableDateTime(reader, "REL_DLUO"),            // REL_DLUO
+                    //         ItemSerialNumber = SafeGetString(reader, "REL_LOT2"),             // REL_LOT2
+                    //         ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
+                    //             SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
+                    //     };
+
+                    //     if (!string.IsNullOrEmpty(line.ItemNumber) && line.ItemQuantity > 0)
+                    //     {
+                    //         journalDict[journalKey].Lines.Add(line);
+                    //     }
+                    // }
+
+                    // journals.AddRange(journalDict.Values);
+
+                    // // Supprimer les journaux sans lignes
+                    // journals.RemoveAll(j => j.Lines.Count == 0);
+
+                    // _logger.LogInformation($"✅ {journals.Count} journaux de réception récupérés");
+
+                    // return journals;
                 }
-
-                journals.AddRange(journalDict.Values);
-
-                // Supprimer les journaux sans lignes
-                journals.RemoveAll(j => j.Lines.Count == 0);
-
-                _logger.LogInformation($"✅ {journals.Count} journaux de réception récupérés");
-
-                return journals;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ Erreur lors de la récupération des journaux REE_DAT");
-                return journals;
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "❌ Erreur lors de la récupération des journaux REE_DAT");
+                    return journals;
+                }
             }
         }
 
@@ -162,21 +254,21 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// ✅ Génère un numéro de journal unique
         /// </summary>
-        private async Task<string> GenerateJournalNumberAsync(SqlConnection connection)
-        {
-            try
-            {
-                var datePrefix = DateTime.Now.ToString("yyyyMM");
-                var journalNumber = $"JA{datePrefix}{DateTime.Now:ddHHmmss}";
+         private async Task<string> GenerateJournalNumberAsync(SqlConnection connection)
+         {
+             try
+             {
+                 var datePrefix = DateTime.Now.ToString("yyyyMM");
+                 var journalNumber = $"JA{datePrefix}{DateTime.Now:ddHHmmss}";
 
-                _logger.LogDebug($"📝 Numéro de journal généré: {journalNumber}");
-                return journalNumber;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "⚠️ Erreur génération numéro journal, utilisation fallback");
-                return $"JA{DateTime.Now:yyyyMMddHHmmss}";
-            }
+                 _logger.LogDebug($"📝 Numéro de journal généré: {journalNumber}");
+                 return journalNumber;
+             }
+             catch (Exception ex)
+             {
+                 _logger.LogWarning(ex, "⚠️ Erreur génération numéro journal, utilisation fallback");
+                 return $"JA{DateTime.Now:yyyyMMddHHmmss}";
+             }
         }
 
         /// <summary>
@@ -191,7 +283,9 @@ namespace DynamicsApiToDatabase.Services
 
                 var report = "📊 === ANALYSE STRUCTURE REE/MVT/REL === 📊\n\n";
 
-                var tablesToTest = new[] { "REE_DAT", "MVT_DAT", "REL_DAT" };
+                //MODIFICATION RD 06/08/2025
+                //var tablesToTest = new[] { "REE_DAT", "MVT_DAT", "REL_DAT" };
+                var tablesToTest = new[] { "REE_DAT", "REL_DAT" };
 
                 foreach (var tableName in tablesToTest)
                 {
@@ -203,25 +297,44 @@ namespace DynamicsApiToDatabase.Services
                 report += "🔍 TEST DONNÉES AVEC VRAIS NOMS DE COLONNES:\n";
                 try
                 {
+                    //MODIFICATION RD 06/08/2025
+                    // const string testSql = @"
+                    //     SELECT TOP 3
+                    //         REE.REE_NORE as PackingSlipId,
+                    //         REE.REE_DARE as TransactionDate,
+                    //         REE.REE_ETRE as Status,
+                    //         REE.QUA_CODE as QualityCode,
+                    //         MVT.REA_RFTI as TransactionRef,
+                    //         MVT.NoLR as LineNumber
+                    //     FROM REE_DAT REE
+                    //     LEFT JOIN MVT_DAT MVT ON REE.REE_KEYU = MVT.REE_KEYU
+                    //     WHERE REE.REE_NORE IS NOT NULL
+                    //     ORDER BY REE.REE_KEYU DESC";
+
                     const string testSql = @"
                         SELECT TOP 3
                             REE.REE_NORE as PackingSlipId,
                             REE.REE_DARE as TransactionDate,
                             REE.REE_ETRE as Status,
-                            REE.QUA_CODE as QualityCode,
-                            MVT.REA_RFTI as TransactionRef,
-                            MVT.NoLR as LineNumber
-                        FROM REE_DAT REE
-                        LEFT JOIN MVT_DAT MVT ON REE.REE_KEYU = MVT.REE_KEYU
-                        WHERE REE.REE_NORE IS NOT NULL
-                        ORDER BY REE.REE_KEYU DESC";
+                            REL.QUA_CODE as QualityCode,
+                            REL.REA_RFCE as TransactionRef,
+                            REL.REL_NORL as LineNumber
+                        FROM 
+                            REE_DAT REE
+                        LEFT OUTER JOIN 
+                            REL_DAT REL ON REE.ACT_CODE = REL.ACT_CODE and REE.REE_NORE = REL.REE_NORE and REE.REE_KEYU = REL.REE_KEYU
+                        WHERE 1=1
+                            AND REE.ACT_CODE = 'COSMETIQUE'
+                            AND REE.REE_NORE IS NOT NULL
+                        ORDER BY 
+                            REE.REE_KEYU DESC";
 
                     using var testCommand = new SqlCommand(testSql, connection);
                     using var testReader = await testCommand.ExecuteReaderAsync();
 
                     while (await testReader.ReadAsync())
                     {
-                        var packingSlip = SafeGetString(testReader, "PackingSlipId");
+                        var packingSlip = SafeGetInt(testReader, "PackingSlipId");
                         var transactionRef = SafeGetString(testReader, "TransactionRef");
                         var status = SafeGetString(testReader, "Status");
                         var qualityCode = SafeGetString(testReader, "QualityCode");
@@ -261,38 +374,66 @@ namespace DynamicsApiToDatabase.Services
                 // ✅ Test jointure complète avec les vrais noms
                 try
                 {
+                    //MODIFICATION RD 06/08/2025
+                    // const string joinTestSql = @"
+                    //     SELECT TOP 5
+                    //         REE.REE_KEYU,
+                    //         REE.REE_NORE as PackingSlipId,
+                    //         REE.REE_DARE as TransactionDate,
+                    //         REE.QUA_CODE as QualityCode,
+                    //         MVT.REA_RFCE as DefaultTransactionRef,
+                    //         MVT.REA_RFTI as TransactionRef,
+                    //         MVT.NoLR as LineNumber,
+                    //         REL.ART_CODE as ItemCode,
+                    //         REL.ART_QTEU as ItemQuantity
+                    //     FROM REE_DAT REE
+                    //     LEFT JOIN MVT_DAT MVT ON REE.REE_KEYU = MVT.REE_KEYU
+                    //     LEFT JOIN REL_DAT REL ON MVT.NoLR = REL.NoLR
+                    //     WHERE REE.REE_NORE IS NOT NULL
+                    //     ORDER BY REE.REE_KEYU DESC";
+
                     const string joinTestSql = @"
                         SELECT TOP 5
                             REE.REE_KEYU,
                             REE.REE_NORE as PackingSlipId,
                             REE.REE_DARE as TransactionDate,
-                            REE.QUA_CODE as QualityCode,
-                            MVT.REA_RFCE as DefaultTransactionRef,
-                            MVT.REA_RFTI as TransactionRef,
-                            MVT.NoLR as LineNumber,
+                            REL.QUA_CODE as QualityCode,
+                            REL.REA_RFCE as DefaultTransactionRef,
+                            REL.REL_NoLR as LineNumber,
                             REL.ART_CODE as ItemCode,
-                            REL.ART_QTEU as ItemQuantity
-                        FROM REE_DAT REE
-                        LEFT JOIN MVT_DAT MVT ON REE.REE_KEYU = MVT.REE_KEYU
-                        LEFT JOIN REL_DAT REL ON MVT.NoLR = REL.NoLR
-                        WHERE REE.REE_NORE IS NOT NULL
-                        ORDER BY REE.REE_KEYU DESC";
+                            REL.REL_QTRE as ItemQuantity
+                        FROM 
+                            REE_DAT REE
+                        LEFT OUTER JOIN 
+                            REL_DAT REL ON REE.ACT_CODE = REL.ACT_CODE and REE.REE_NORE = REL.REE_NORE and REE.REE_KEYU = REL.REE_KEYU
+						WHERE 1=1
+						    AND REE.ACT_CODE = 'COSMETIQUE'
+						    AND REE.REE_NORE IS NOT NULL
+                        ORDER BY 
+                            REE.REE_KEYU DESC";
 
                     using var joinCommand = new SqlCommand(joinTestSql, connection);
                     using var joinReader = await joinCommand.ExecuteReaderAsync();
 
-                    report += "✅ Test jointure REE_DAT -> MVT_DAT -> REL_DAT:\n";
+                    report += "✅ Test jointure REE_DAT -> REL_DAT:\n";
 
                     while (await joinReader.ReadAsync())
                     {
                         var reeKeyu = SafeGetInt(joinReader, "REE_KEYU");
-                        var packingSlip = SafeGetString(joinReader, "PackingSlipId");
-                        var transactionRef = SafeGetString(joinReader, "TransactionRef");
+                        var packingSlip = SafeGetInt(joinReader, "PackingSlipId");
+
+                        //MODIFICATION RD 06/08/2025
+                        //var transactionRef = SafeGetInt(joinReader, "TransactionRef");
+                        var transactionRef = SafeGetString(joinReader, "DefaultTransactionRef");
+
                         var itemCode = SafeGetString(joinReader, "ItemCode");
                         var quantity = SafeGetLong(joinReader, "ItemQuantity");
 
-                        report += $"   REE_KEYU={reeKeyu}, PackingSlip={packingSlip}, TransactionRef={transactionRef}, " +
-                                 $"Item={itemCode}, Qty={quantity}\n";
+                        //MODIFICATION RD 06/08/2025
+                        // report += $"   REE_KEYU={reeKeyu}, PackingSlip={packingSlip}, TransactionRef={transactionRef}, " +
+                        //          $"Item={itemCode}, Qty={quantity}\n";
+                        report += $"   REE_KEYU={reeKeyu}, PackingSlip={packingSlip}, DefaultTransactionRef={transactionRef}, " +
+                                    $"Item={itemCode}, Qty={quantity}\n";
                     }
 
                     report += "✅ Test jointure réussi\n";
