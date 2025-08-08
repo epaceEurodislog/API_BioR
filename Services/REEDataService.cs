@@ -51,17 +51,41 @@ namespace DynamicsApiToDatabase.Services
                         SELECT
                             REE.REE_NORE,                      -- PackingSlipId
                             --REL.REA_RFCE,                      -- DefaultTransactionReferenceNumber (était MVT.REA_RFTI)
-                            (
-                                select 
-                                    rea_rfti 
-                                from 
-                                    REA_DAT 
-                                where 1=1	
-                                    and act_code = REE.ACT_CODE 
-                                    and REA_RFCE = REL.rea_rfce 
-                                    and ART_CODE = REL.art_code 
-                                    and REA_RFCL = REL.REA_RFCL
-                            ) as REA_RFCE,                      -- DefaultTransactionReferenceNumber   
+                            case 
+		                        when 
+                                    (
+                                        select 
+                                            rea_rfti 
+                                        from 
+                                            REA_DAT 
+                                        where 1=1	
+                                            and act_code = REE.ACT_CODE 
+                                            and REA_RFCE = REL.rea_rfce 
+                                            and ART_CODE = REL.art_code 
+                                            and REA_RFCL = REL.REA_RFCL
+                                    ) like '%SO%'
+			                    then 
+                                    (
+                                        case 
+                                            when 
+                                                CHARINDEX('-',REL.REA_RFCE) > 0 
+                                            then 
+                                                SUBSTRING(REL.REA_RFCE,1,CHARINDEX('-',REL.REA_RFCE)) else REL.REA_RFCE 
+                                        end
+                                    )
+		                        else 
+                                    (
+                                        select 
+                                            rea_rfti 
+                                        from 
+                                            REA_DAT 
+                                        where 1=1	
+                                            and act_code = REE.ACT_CODE 
+                                            and REA_RFCE = REL.rea_rfce 
+                                            and ART_CODE = REL.art_code 
+                                            and REA_RFCL = REL.REA_RFCL
+                                    ) 
+	                        end as REA_RFCE,                      -- DefaultTransactionReferenceNumber   
                             REE.REE_DARE,                      -- TransactionDate
                             REL.REL_NORL,                      -- LineNumber (était MVT.NoLR)
                             substring(REL.ART_CODE,3,len(REL.ART_CODE)) as ART_CODE,                      -- ItemNumber
@@ -157,10 +181,11 @@ namespace DynamicsApiToDatabase.Services
                             {
                                 var journal = new ItemArrivalJournalData
                                 {
+                                    PackingSlipId = Convert.ToString(packingSlipId),                                 // REE_NORE
                                     //MODIFICATION RD 08/08/2025
                                     //JournalNumber = await GenerateJournalNumberAsync(connection),       // JournalNumber
-                                    JournalLog = await GenerateJournalNumberAsync(connection),
-                                    PackingSlipId = Convert.ToString(packingSlipId),                                 // REE_NORE
+                                    JournalLog = await GenerateJournalNumberAsync(connection) + $"_{packingSlipId}", // JournalLog
+                                    
                                     TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
                                     TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE => dans les lignes
                                     DataAreaId = "BR",                                             // DataAreaId (fixe)

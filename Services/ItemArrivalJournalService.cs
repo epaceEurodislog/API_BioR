@@ -408,7 +408,7 @@ namespace DynamicsApiToDatabase.Services
 
                     //AJOUT RD 07/08/2025
                     string responseBody = await response.Content.ReadAsStringAsync();
-                    _logger.LogInformation($"📄 Réponse de l'API: {responseBody}");
+                    //_logger.LogInformation($"📄 Réponse de l'API: {responseBody}");
 
                     string textFind = "JournalNumber";
                     int startIndex = responseBody.IndexOf(textFind) + textFind.Length + 3; // +3 pour sauter les guillemets
@@ -417,14 +417,14 @@ namespace DynamicsApiToDatabase.Services
 
                     JournalNumber = responseBody.Substring(startIndex, endIndex - startIndex).Trim();
 
-                    _logger.LogInformation($"JournalNumber extrait: {JournalNumber}");
+                    //_logger.LogInformation($"JournalNumber extrait: {JournalNumber}");
 
                     return true;
                 }
                 else
                 {
                     var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogError($"❌ POST échoué: {response.StatusCode} - {errorContent}");
+                    _logger.LogError($"❌ POST échoué: {journalLog} : {response.StatusCode} - {errorContent}");
                     return false;
                 }
             }
