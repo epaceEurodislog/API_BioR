@@ -50,10 +50,21 @@ namespace DynamicsApiToDatabase.Services
                     const string sql = @"
                         SELECT
                             REE.REE_NORE,                      -- PackingSlipId
-                            REL.REA_RFCE,                      -- DefaultTransactionReferenceNumber (était MVT.REA_RFTI)
+                            --REL.REA_RFCE,                      -- DefaultTransactionReferenceNumber (était MVT.REA_RFTI)
+                            (
+                                select 
+                                    rea_rfti 
+                                from 
+                                    REA_DAT 
+                                where 1=1	
+                                    and act_code = REE.ACT_CODE 
+                                    and REA_RFCE = REL.rea_rfce 
+                                    and ART_CODE = REL.art_code 
+                                    and REA_RFCL = REL.REA_RFCL
+                            ) as REA_RFCE,                      -- DefaultTransactionReferenceNumber   
                             REE.REE_DARE,                      -- TransactionDate
                             REL.REL_NORL,                      -- LineNumber (était MVT.NoLR)
-                            REL.ART_CODE,                      -- ItemNumber
+                            substring(REL.ART_CODE,3,len(REL.ART_CODE)) as ART_CODE,                      -- ItemNumber
                             REL.REL_QTRE,                      -- ItemQuantity (était ART_QTEUB)
                             coalesce(REL.REL_LOT1,''),         -- ItemBatchNumber
                             coalesce(REL.REL_DLUO,''),         -- ExpDate
@@ -73,8 +84,35 @@ namespace DynamicsApiToDatabase.Services
                             AND REE.REE_NORE != ''
                             AND REL.REA_RFCE IS NOT NULL
                             AND REL.REA_RFCE != ''
+                            AND (
+                                select rea_rfti 
+                                from REA_DAT 
+                                where 1=1	
+                                and act_code = REE.ACT_CODE 
+                                and REA_RFCE = REL.rea_rfce 
+                                and ART_CODE = REL.art_code 
+                                and REA_RFCL = REL.REA_RFCL
+                            ) IS NOT NULL
+			                AND (
+                                select rea_rfti 
+                                from REA_DAT 
+                                where 1=1	
+                                and act_code = REE.ACT_CODE 
+                                and REA_RFCE = REL.rea_rfce 
+                                and ART_CODE = REL.art_code 
+                                and REA_RFCL = REL.REA_RFCL
+                            ) != ''
                             AND REL.ART_CODE IS NOT NULL
                             AND REL.ART_CODE != ''
+                            AND (
+                                select rea_crqi 
+                                from REA_DAT 
+                                where 1=1	
+                                and act_code = REE.ACT_CODE 
+                                and REA_RFCE = REL.rea_rfce 
+                                and ART_CODE = REL.art_code 
+                                and REA_RFCL = REL.REA_RFCL
+                            ) = 'Interface EUDL' --pour les tests
                             --AND REE.REE_NORE = 35
                         ORDER BY 
                             REE.REE_DARE DESC, REE.REE_NORE";
@@ -119,14 +157,20 @@ namespace DynamicsApiToDatabase.Services
                             {
                                 var journal = new ItemArrivalJournalData
                                 {
-                                    JournalNumber = await GenerateJournalNumberAsync(connection),       // JournalNumber
+                                    //MODIFICATION RD 08/08/2025
+                                    //JournalNumber = await GenerateJournalNumberAsync(connection),       // JournalNumber
+                                    JournalLog = await GenerateJournalNumberAsync(connection),
                                     PackingSlipId = Convert.ToString(packingSlipId),                                 // REE_NORE
                                     TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
-                                    TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE
+                                    TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE => dans les lignes
                                     DataAreaId = "BR",                                             // DataAreaId (fixe)
                                     JournalNameId = "ARR",                                         // JournalNameId (fixe)
                                     DefaultReceivingSiteId = "S01",                                // DefaultReceivingSiteId (fixe)
-                                    DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
+
+                                    //MODIFICATION RD 07/08/2025
+                                    //DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
+                                    DefaultReceivingWarehouseId = "12",
+
                                     DefaultReceivingWarehouseLocationId = "RECNOLP"                // DefaultReceivingWarehouseLocationId (fixe)
                                 };
 
@@ -153,10 +197,7 @@ namespace DynamicsApiToDatabase.Services
 
                         }
 
-                        journals.AddRange(journalDict.Values);
-
-                        string resultat = string.Join(", ", journalDict.Select(kv => $"{kv.Key}: {kv.Value}"));
-                        _logger.LogInformation(resultat);
+                        journals.AddRange(journalDict.Values);                        
 
                         // Supprimer les journaux sans lignes
                         journals.RemoveAll(j => j.Lines.Count == 0);
@@ -240,14 +281,24 @@ namespace DynamicsApiToDatabase.Services
         /// </summary>
         private string MapQualityCodeToInventoryStatus(string qualityCode)
         {
+            //MODIFICATION RD 07/08/2025
+            // return qualityCode?.ToUpper() switch
+            // {
+            //     "OK" => "Available",
+            //     "NOK" => "Blocked",
+            //     "QUAR" => "QuarantineOrdered",
+            //     "QUARANTINE" => "QuarantineOrdered",
+            //     "BLOCKED" => "Blocked",
+            //     _ => "Available" // Par défaut
+            // };
             return qualityCode?.ToUpper() switch
             {
-                "OK" => "Available",
-                "NOK" => "Blocked",
+                "STD" => "Disponible",
+                "NOK" => "Bloque3PL",
                 "QUAR" => "QuarantineOrdered",
                 "QUARANTINE" => "QuarantineOrdered",
-                "BLOCKED" => "Blocked",
-                _ => "Available" // Par défaut
+                "BLOCKED" => "Bloque3PL",
+                _ => "Disponible" // Par défaut
             };
         }
 

@@ -188,6 +188,7 @@ namespace DynamicsApiToDatabase.Services
             FROM MIL_DAT MIL
             INNER JOIN OPE_DAT OPE ON MIL.OPE_NoOE = OPE.OPE_NoOE and MIL.ACT_CODE = OPE.ACT_CODE
             WHERE OPE.OPE_KEYU = @OpeKeyu
+            AND OPE.ACT_CODE = 'COSMETIQUE' -- Filtrer par activité COSMETIQUE
             ORDER BY MIL.ART_CODE";
 
                 using var command = new SqlCommand(sql, connection);
@@ -245,6 +246,7 @@ namespace DynamicsApiToDatabase.Services
             FROM SEX_DAT SEX
             INNER JOIN OPE_DAT OPE ON SEX.SEX_NoOE = OPE.OPE_NoOE
             WHERE OPE.OPE_KEYU = @OpeKeyu
+            AND SEX.SEX_ACT = 'COSMETIQUE' -- Filtrer par activité COSMETIQUE
             ORDER BY SEX.SEX_SUPE";
 
                 using var command = new SqlCommand(sql, connection);
@@ -310,6 +312,7 @@ namespace DynamicsApiToDatabase.Services
                 FROM OPE_DAT OPE
                 LEFT JOIN MIL_DAT MIL ON OPE.OPE_NoOE = MIL.OPE_NoOE
                 WHERE OPE.OPE_KEYU IN (1,2,3,4,5)
+                AND OPE.ACT_CODE = 'COSMETIQUE' -- Filtrer par activité COSMETIQUE
                 ORDER BY OPE.OPE_KEYU";
 
                     using var joinCommand = new SqlCommand(joinTestSql, connection);
@@ -346,6 +349,7 @@ namespace DynamicsApiToDatabase.Services
                 FROM OPE_DAT OPE
                 LEFT JOIN SEX_DAT SEX ON OPE.OPE_NoOE = SEX.SEX_NoOE
                 WHERE OPE.OPE_KEYU IN (1,2,3,4,5)
+                AND OPE.ACT_CODE = 'COSMETIQUE' -- Filtrer par activité COSMETIQUE
                 ORDER BY OPE.OPE_KEYU";
 
                     using var sexCommand = new SqlCommand(sexJoinTestSql, connection);

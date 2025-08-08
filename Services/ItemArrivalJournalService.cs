@@ -36,6 +36,8 @@ namespace DynamicsApiToDatabase.Services
         private readonly ItemArrivalJournalConfig _config;
         private readonly string _baseUrl;
 
+        public string JournalNumber { get; private set; } = ""; // MODIFICATION RD 08/08/2025
+
         public ItemArrivalJournalService(
             IREEDataService reeDataService,
             IJsonOutService jsonOutService,
@@ -113,7 +115,7 @@ namespace DynamicsApiToDatabase.Services
                         else
                         {
                             report.FailedJournals++;
-                            report.ErrorMessages.Add($"Journal {result.JournalNumber}: {result.ErrorMessage}");
+                            report.ErrorMessages.Add($"Journal {result.JournalLog}: {result.ErrorMessage}");
                         }
                     }
 
@@ -149,19 +151,21 @@ namespace DynamicsApiToDatabase.Services
         {
             var result = new ItemArrivalJournalResult
             {
-                JournalNumber = journal.JournalNumber,
+                //MODIFICATION RD 08/08/2025
+                //JournalNumber = journal.JournalNumber,
+                JournalLog = journal.JournalLog,
                 PackingSlipId = journal.PackingSlipId
             };
             var startTime = DateTime.Now;
 
             try
             {
-                _logger.LogInformation($"🔄 Traitement journal {journal.JournalNumber} (PackingSlip: {journal.PackingSlipId})");
+                _logger.LogInformation($"🔄 Traitement journal {journal.JournalLog} (PackingSlip: {journal.PackingSlipId})");
 
-                await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, "Début traitement", ItemArrivalJournalStatusConstants.Processing);
+                await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, "Début traitement", ItemArrivalJournalStatusConstants.Processing);
 
                 // ÉTAPE 1: Envoyer les en-têtes
-                _logger.LogDebug($"📤 1/3 - Envoi en-têtes journal {journal.JournalNumber}");
+                _logger.LogDebug($"📤 1/3 - Envoi en-têtes journal {journal.JournalLog}");
                 var headersSuccess = await SendJournalHeaderAsync(authToken, journal);
 
                 if (!headersSuccess)
@@ -170,15 +174,15 @@ namespace DynamicsApiToDatabase.Services
                     result.Status = ItemArrivalJournalStatusConstants.Error;
                     result.ErrorMessage = "Échec envoi en-têtes";
                     result.ProcessingTime = DateTime.Now - startTime;
-                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, "", result.Status, result.ErrorMessage);
+                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, "", result.Status, result.ErrorMessage);
                     return result;
                 }
 
                 result.HeadersSent = 1;
-                await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, "En-têtes envoyés", ItemArrivalJournalStatusConstants.HeadersSent);
+                await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, "En-têtes envoyés", ItemArrivalJournalStatusConstants.HeadersSent);
 
                 // ÉTAPE 2: Envoyer les lignes
-                _logger.LogDebug($"📄 2/3 - Envoi {journal.Lines.Count} lignes journal {journal.JournalNumber}");
+                _logger.LogDebug($"📄 2/3 - Envoi {journal.Lines.Count} lignes journal {journal.JournalLog}");
                 var linesSuccess = await SendJournalLinesAsync(authToken, journal);
 
                 if (!linesSuccess)
@@ -187,17 +191,17 @@ namespace DynamicsApiToDatabase.Services
                     result.Status = ItemArrivalJournalStatusConstants.Error;
                     result.ErrorMessage = "Échec envoi lignes";
                     result.ProcessingTime = DateTime.Now - startTime;
-                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, "", result.Status, result.ErrorMessage);
+                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, "", result.Status, result.ErrorMessage);
                     return result;
                 }
 
                 result.LinesSent = journal.Lines.Count;
-                await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, $"{journal.Lines.Count} lignes envoyées", ItemArrivalJournalStatusConstants.LinesSent);
+                await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, $"{journal.Lines.Count} lignes envoyées", ItemArrivalJournalStatusConstants.LinesSent);
 
                 // ÉTAPE 3: Confirmation (si activée)
                 if (_config.EnableConfirmationPost)
                 {
-                    _logger.LogDebug($"✅ 3/3 - Confirmation journal {journal.JournalNumber}");
+                    _logger.LogDebug($"✅ 3/3 - Confirmation journal {journal.JournalLog}");
                     var confirmationSuccess = await SendJournalConfirmationAsync(authToken, journal);
 
                     if (confirmationSuccess)
@@ -205,15 +209,15 @@ namespace DynamicsApiToDatabase.Services
                         result.Success = true;
                         result.Status = ItemArrivalJournalStatusConstants.Confirmed;
                         result.IsConfirmed = true;
-                        _logger.LogInformation($"✅ Journal {journal.JournalNumber} traité avec succès et confirmé");
-                        await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, "Journal confirmé", result.Status);
+                        _logger.LogInformation($"✅ Journal {journal.JournalLog} traité avec succès et confirmé");
+                        await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, "Journal confirmé", result.Status);
                     }
                     else
                     {
                         result.Success = false;
                         result.Status = ItemArrivalJournalStatusConstants.PendingRetry;
                         result.ErrorMessage = "Confirmation échouée, en attente retry";
-                        await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, "", result.Status, result.ErrorMessage);
+                        await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, "", result.Status, result.ErrorMessage);
                     }
                 }
                 else
@@ -221,7 +225,7 @@ namespace DynamicsApiToDatabase.Services
                     // Si confirmation désactivée, considérer comme réussi après envoi des lignes
                     result.Success = true;
                     result.Status = ItemArrivalJournalStatusConstants.LinesSent;
-                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, "Journal traité (confirmation désactivée)", result.Status);
+                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, "Journal traité (confirmation désactivée)", result.Status);
                 }
 
                 result.ProcessingTime = DateTime.Now - startTime;
@@ -229,13 +233,13 @@ namespace DynamicsApiToDatabase.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Exception lors du traitement journal {journal.JournalNumber}");
+                _logger.LogError(ex, $"❌ Exception lors du traitement journal {journal.JournalLog}");
                 result.Success = false;
                 result.Status = ItemArrivalJournalStatusConstants.Error;
                 result.ErrorMessage = ex.Message;
                 result.ProcessingTime = DateTime.Now - startTime;
 
-                await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId, "", result.Status, ex.Message);
+                await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId, "", result.Status, ex.Message);
                 return result;
             }
         }
@@ -262,12 +266,12 @@ namespace DynamicsApiToDatabase.Services
                 };
 
                 var endpoint = $"{_baseUrl}/{_config.HeadersEndpoint}";
-                var success = await SendPayloadAsync(authToken, endpoint, headerPayload, journal.JournalNumber);
+                var success = await SendPayloadAsync(authToken, endpoint, headerPayload, journal.JournalLog);
 
                 if (success)
                 {
-                    _logger.LogInformation($"✅ En-têtes envoyés pour journal {journal.JournalNumber}");
-                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId,
+                    _logger.LogInformation($"✅ En-têtes envoyés pour journal {journal.JournalLog}");
+                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId,
                         JsonSerializer.Serialize(headerPayload), "ItemArrivalHeaders");
                 }
 
@@ -275,7 +279,7 @@ namespace DynamicsApiToDatabase.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Erreur envoi en-têtes journal {journal.JournalNumber}");
+                _logger.LogError(ex, $"❌ Erreur envoi en-têtes journal {journal.JournalLog}");
                 return false;
             }
         }
@@ -295,7 +299,7 @@ namespace DynamicsApiToDatabase.Services
                     var linePayload = new ItemArrivalJournalLinePayload
                     {
                         DataAreaId = journal.DataAreaId,
-                        JournalNumber = journal.JournalNumber,
+                        JournalNumber = JournalNumber,
                         LineNumber = line.LineNumber,
                         ItemNumber = line.ItemNumber,
                         TransactionDate = journal.TransactionDate.ToString("yyyy-MM-ddTHH:mm:ssZ"),
@@ -306,11 +310,11 @@ namespace DynamicsApiToDatabase.Services
                         ReceivingInventoryStatusId = line.ReceivingInventoryStatusId
                     };
 
-                    var success = await SendPayloadAsync(authToken, endpoint, linePayload, journal.JournalNumber);
+                    var success = await SendPayloadAsync(authToken, endpoint, linePayload, journal.JournalLog);
                     if (success)
                     {
                         successCount++;
-                        await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId,
+                        await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId,
                             JsonSerializer.Serialize(linePayload), "ItemArrivalLines");
                     }
 
@@ -323,18 +327,18 @@ namespace DynamicsApiToDatabase.Services
 
                 if (allSuccess)
                 {
-                    _logger.LogInformation($"✅ Journal {journal.JournalNumber}: {message}");
+                    _logger.LogInformation($"✅ Journal {journal.JournalLog}: {message}");
                 }
                 else
                 {
-                    _logger.LogWarning($"⚠️ Journal {journal.JournalNumber}: {message} - succès partiel");
+                    _logger.LogWarning($"⚠️ Journal {journal.JournalLog}: {message} - succès partiel");
                 }
 
                 return allSuccess;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Erreur envoi lignes journal {journal.JournalNumber}");
+                _logger.LogError(ex, $"❌ Erreur envoi lignes journal {journal.JournalLog}");
                 return false;
             }
         }
@@ -351,17 +355,17 @@ namespace DynamicsApiToDatabase.Services
                     Request = new ItemArrivalJournalConfirmationRequest
                     {
                         DataAreaId = journal.DataAreaId,
-                        JournalNumber = journal.JournalNumber
+                        JournalNumber = journal.JournalLog
                     }
                 };
 
                 var endpoint = $"{_baseUrl}/{_config.ConfirmationEndpoint}";
-                var success = await SendPayloadAsync(authToken, endpoint, confirmationPayload, journal.JournalNumber);
+                var success = await SendPayloadAsync(authToken, endpoint, confirmationPayload, journal.JournalLog);
 
                 if (success)
                 {
-                    _logger.LogInformation($"✅ Confirmation envoyée pour journal {journal.JournalNumber}");
-                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalNumber, journal.PackingSlipId,
+                    _logger.LogInformation($"✅ Confirmation envoyée pour journal {journal.JournalLog}");
+                    await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId,
                         JsonSerializer.Serialize(confirmationPayload), "ItemArrivalConfirmation");
                 }
 
@@ -369,7 +373,7 @@ namespace DynamicsApiToDatabase.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Erreur confirmation journal {journal.JournalNumber}");
+                _logger.LogError(ex, $"❌ Erreur confirmation journal {journal.JournalLog}");
                 return false;
             }
         }
@@ -377,7 +381,7 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Envoie un payload individuel vers Dynamics
         /// </summary>
-        private async Task<bool> SendPayloadAsync<T>(string authToken, string endpoint, T payload, string journalNumber)
+        private async Task<bool> SendPayloadAsync<T>(string authToken, string endpoint, T payload, string journalLog)
         {
             try
             {
@@ -401,6 +405,20 @@ namespace DynamicsApiToDatabase.Services
                 if (response.IsSuccessStatusCode)
                 {
                     _logger.LogDebug($"✅ POST réussi: {response.StatusCode}");
+
+                    //AJOUT RD 07/08/2025
+                    string responseBody = await response.Content.ReadAsStringAsync();
+                    _logger.LogInformation($"📄 Réponse de l'API: {responseBody}");
+
+                    string textFind = "JournalNumber";
+                    int startIndex = responseBody.IndexOf(textFind) + textFind.Length + 3; // +3 pour sauter les guillemets
+                    int endIndex = responseBody.IndexOf(",", startIndex) -1; // -1 pour enlever les guillemets de fin
+                    if (endIndex == -1) endIndex = responseBody.Length;
+
+                    JournalNumber = responseBody.Substring(startIndex, endIndex - startIndex).Trim();
+
+                    _logger.LogInformation($"JournalNumber extrait: {JournalNumber}");
+
                     return true;
                 }
                 else

@@ -57,7 +57,10 @@ namespace DynamicsApiToDatabase.Models
     public class ItemArrivalJournalData
     {
         // Identifiants
-        public string JournalNumber { get; set; } = "";        // Généré automatiquement
+
+        //MODIFICATION RD 08/08/2025
+        //public string JournalNumber { get; set; } = "";        // Généré automatiquement
+        public string JournalLog { get; set; } = "";        // Généré automatiquement
         public string PackingSlipId { get; set; } = "";        // REE_NOREIN
         public string TransactionReferenceNumber { get; set; } = ""; // REA_RFTI (N° Commande)
         public DateTime TransactionDate { get; set; }          // REE_DARE
@@ -179,7 +182,10 @@ namespace DynamicsApiToDatabase.Models
     public class ItemArrivalJournalResult
     {
         public bool Success { get; set; }
-        public string JournalNumber { get; set; } = "";
+
+        //MODIFICATION RD 08/08/2025
+        //public string JournalNumber { get; set; } = "";
+        public string JournalLog { get; set; } = "";
         public string PackingSlipId { get; set; } = "";
         public string Status { get; set; } = "";
         public string ErrorMessage { get; set; } = "";
