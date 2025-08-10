@@ -137,6 +137,7 @@ namespace DynamicsApiToDatabase.Services
                                 and ART_CODE = REL.art_code 
                                 and REA_RFCL = REL.REA_RFCL
                             ) = 'Interface EUDL' --pour les tests
+                            AND REE.REE_ETRE = '200' -- =seulement les réceptions cloturées
                             --AND REE.REE_NORE = 35
                         ORDER BY 
                             REE.REE_DARE DESC, REE.REE_NORE";
@@ -148,7 +149,7 @@ namespace DynamicsApiToDatabase.Services
                     SqlCommand command = new SqlCommand(sql, connection);
                     
                     //AJOUT RD 06/08/2025
-                    _logger.LogInformation(_speedWmsConnectionString);
+                    //_logger.LogInformation(_speedWmsConnectionString);
                     _logger.LogInformation($"Statut de la connexion avant Open : {connection.State}");
                     connection.Open();
                     _logger.LogInformation($"Statut de la connexion après Open : {connection.State}");
