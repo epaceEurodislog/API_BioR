@@ -151,7 +151,7 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// ✅ Enregistre un envoi pour ItemArrivalJournal
         /// </summary>
-        public async Task LogItemArrivalJournalAsync(string journalNumber, string packingSlipId,
+        public async Task LogItemArrivalJournalAsync(string JournalLog, string packingSlipId,
             string jsonData, string destination, string errorMessage = "")
         {
             try
@@ -170,8 +170,8 @@ namespace DynamicsApiToDatabase.Services
 
                 // Tronquer les valeurs selon les limites de colonne
                 var destination_safe = TruncateString(destination, MAX_JSON_DEST_LENGTH);
-                var environment_safe = TruncateString($"JOURNAL_{journalNumber}", MAX_JSON_TREN_LENGTH);
-                var importId_safe = TruncateString($"{journalNumber}_{packingSlipId}", MAX_JSON_IMPORT_ID_LENGTH);
+                var environment_safe = TruncateString($"JOURNAL_{JournalLog}", MAX_JSON_TREN_LENGTH);
+                var importId_safe = TruncateString($"{JournalLog}_{packingSlipId}", MAX_JSON_IMPORT_ID_LENGTH);
 
                 command.Parameters.AddWithValue("@Destination", destination_safe);
                 command.Parameters.AddWithValue("@ClientCode", "BR");
@@ -184,16 +184,16 @@ namespace DynamicsApiToDatabase.Services
 
                 if (!string.IsNullOrEmpty(errorMessage))
                 {
-                    _logger.LogWarning($"⚠️ Journal {journalNumber} - {destination}: {errorMessage}");
+                    _logger.LogWarning($"⚠️ Journal {JournalLog} - {destination}: {errorMessage}");
                 }
                 else
                 {
-                    _logger.LogDebug($"📝 Journal {journalNumber} - {destination} enregistré dans JSON_OUT");
+                    _logger.LogDebug($"📝 Journal {JournalLog} - {destination} enregistré dans JSON_OUT");
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Erreur enregistrement JSON_OUT pour journal {journalNumber}");
+                _logger.LogError(ex, $"❌ Erreur enregistrement JSON_OUT pour journal {JournalLog}");
                 throw;
             }
         }

@@ -122,8 +122,7 @@ namespace DynamicsApiToDatabase.Services
             AND OPE_STAT = '070'  -- Seulement les BL en préparation (statut 070)
             -- 🧪 FILTRE TEST : Seulement OPE_ALPHA17 = PP000283
             -- AND OPE_ALPHA17 in ('PP000285', 'PP000282')
-            AND OPE_REDO = 'OT000321' -- Filtrer par OPE_REDO spécifique
-
+            AND OPE_REDO = 'OT000511' -- Filtrer par OPE_REDO spécifique
             ORDER BY OPE_KEYU";
 
                 using var command = new SqlCommand(sql, connection);

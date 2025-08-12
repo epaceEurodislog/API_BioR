@@ -38,6 +38,7 @@ namespace DynamicsApiToDatabase.Services
 
         public string JournalNumber { get; private set; } = ""; // MODIFICATION RD 08/08/2025
 
+        public string JournalNumberKey { get; private set; } = ""; // MODIFICATION RD 11/08/2025
         public ItemArrivalJournalService(
             IREEDataService reeDataService,
             IJsonOutService jsonOutService,
@@ -266,13 +267,20 @@ namespace DynamicsApiToDatabase.Services
                 };
 
                 var endpoint = $"{_baseUrl}/{_config.HeadersEndpoint}";
-                var success = await SendPayloadAsync(authToken, endpoint, headerPayload, journal.JournalLog);
+
+                //MODIFICATION RD 11/08/2025
+                _logger.LogInformation($" header content : {JsonSerializer.Serialize(headerPayload)}");
+                var success = await SendPayloadAsync(authToken, endpoint, headerPayload, journal.JournalLog, journal.PackingSlipId);
+                //var success = await SendPayloadAsync(authToken, endpoint, headerPayload);
 
                 if (success)
                 {
                     _logger.LogInformation($"✅ En-têtes envoyés pour journal {journal.JournalLog}");
                     await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId,
                         JsonSerializer.Serialize(headerPayload), "ItemArrivalHeaders");
+
+                    //AJOUT RD 11/08/2025
+                    return true;
                 }
 
                 return success;
@@ -310,12 +318,22 @@ namespace DynamicsApiToDatabase.Services
                         ReceivingInventoryStatusId = line.ReceivingInventoryStatusId
                     };
 
-                    var success = await SendPayloadAsync(authToken, endpoint, linePayload, journal.JournalLog);
+                    //MODIFICATION RD 11/08/2025
+                    var success = await SendPayloadAsync(authToken, endpoint, linePayload, journal.JournalLog, journal.PackingSlipId);
+                    //var success = await SendPayloadAsync(authToken, endpoint, linePayload);
+
+                    _logger.LogInformation($" line content : {JsonSerializer.Serialize(linePayload)}");
+
                     if (success)
                     {
                         successCount++;
+
+                        //MODIFICATION RD 10/08/2025
                         await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId,
                             JsonSerializer.Serialize(linePayload), "ItemArrivalLines");
+                        //await _jsonOutService.LogItemArrivalJournalAsync(JournalNumber, journal.PackingSlipId,
+                        //    JsonSerializer.Serialize(linePayload), "ItemArrivalLines");
+                        return true;
                     }
 
                     // Petite pause entre les lignes
@@ -328,6 +346,7 @@ namespace DynamicsApiToDatabase.Services
                 if (allSuccess)
                 {
                     _logger.LogInformation($"✅ Journal {journal.JournalLog}: {message}");
+                    return true;
                 }
                 else
                 {
@@ -355,18 +374,30 @@ namespace DynamicsApiToDatabase.Services
                     Request = new ItemArrivalJournalConfirmationRequest
                     {
                         DataAreaId = journal.DataAreaId,
-                        JournalNumber = journal.JournalLog
+                        //JournalNumber = journal.JournalLog
+                        JournalNumber = JournalNumber, // MODIFICATION RD 10/08/2025
                     }
                 };
 
                 var endpoint = $"{_baseUrl}/{_config.ConfirmationEndpoint}";
-                var success = await SendPayloadAsync(authToken, endpoint, confirmationPayload, journal.JournalLog);
+
+                //MODIFICATION RD 10/08/2025
+                var success = await SendPayloadAsync(authToken, endpoint, confirmationPayload, journal.JournalLog, journal.PackingSlipId);
+                //var success = await SendPayloadAsync(authToken, endpoint, confirmationPayload);
+
+                _logger.LogInformation($" confirmation content : {JsonSerializer.Serialize(confirmationPayload)}");
 
                 if (success)
                 {
                     _logger.LogInformation($"✅ Confirmation envoyée pour journal {journal.JournalLog}");
+
+                    //MODIFICATION RD 10/08/2025
                     await _jsonOutService.LogItemArrivalJournalAsync(journal.JournalLog, journal.PackingSlipId,
                         JsonSerializer.Serialize(confirmationPayload), "ItemArrivalConfirmation");
+                    //await _jsonOutService.LogItemArrivalJournalAsync(JournalNumber, journal.PackingSlipId,
+                    //    JsonSerializer.Serialize(confirmationPayload), "ItemArrivalConfirmation");
+                    return true;
+
                 }
 
                 return success;
@@ -381,8 +412,10 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Envoie un payload individuel vers Dynamics
         /// </summary>
-        private async Task<bool> SendPayloadAsync<T>(string authToken, string endpoint, T payload, string journalLog)
+        private async Task<bool> SendPayloadAsync<T>(string authToken, string endpoint, T payload, string journalLog, string? packingSlipId)
+        //private async Task<bool> SendPayloadAsync<T>(string authToken, string endpoint, T payload)
         {
+            
             try
             {
                 var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions
@@ -417,7 +450,9 @@ namespace DynamicsApiToDatabase.Services
 
                     JournalNumber = responseBody.Substring(startIndex, endIndex - startIndex).Trim();
 
-                    //_logger.LogInformation($"JournalNumber extrait: {JournalNumber}");
+                    JournalNumberKey = JournalNumber + "_" + packingSlipId; // MODIFICATION RD 11/08/2025
+
+                    _logger.LogInformation($"JournalNumber extrait: {JournalNumberKey}");
 
                     return true;
                 }

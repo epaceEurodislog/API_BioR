@@ -38,261 +38,153 @@ namespace DynamicsApiToDatabase.Services
         public async Task<List<ItemArrivalJournalData>> GetPendingJournalsAsync()
         {
             var journals = new List<ItemArrivalJournalData>();
+            
+            const string sql = @"SELECT
+                    REE.REE_NORE,                      -- PackingSlipId
+                    case 
+                        when (
+                            select rea_rfti from REA_DAT 
+                            where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
+                        ) like '%SO%'
+                        then (
+                            case 
+                                when CHARINDEX('-',REL.REA_RFCE) > 0 
+                                then SUBSTRING(REL.REA_RFCE,1,CHARINDEX('-',REL.REA_RFCE)) 
+                                else REL.REA_RFCE 
+                            end
+                        )
+                        else (
+                            select rea_rfti from REA_DAT 
+                            where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
+                        ) 
+                    end as REA_RFCE,                      -- DefaultTransactionReferenceNumber   
+                    REE.REE_DARE,                      -- TransactionDate
+                    REL.REL_NORL,                      -- LineNumber (était MVT.NoLR)
+                    substring(REL.ART_CODE,3,len(REL.ART_CODE)) as ART_CODE,                      -- ItemNumber
+                    REL.REL_QTRE,                      -- ItemQuantity (était ART_QTEUB)
+                    coalesce(REL.REL_LOT1,'') as REL_LOT1,         -- ItemBatchNumber
+                    coalesce(REL.REL_DLUO,'') as REL_DLUO,         -- ExpDate
+                    REL.REL_LOT2,                      -- ItemSerialNumber
+                    REE.REE_ETRE,                      -- Status
+                    REE.ACT_CODE,                      -- ActivityCode
+                    REE.REE_CCLI,                      -- DefaultReceivingWarehouseId
+                    REL.QUA_CODE                       -- ReceivingInventoryStatusId
+                FROM 
+                    REE_DAT REE
+                INNER JOIN 
+                    REL_DAT REL ON REE.ACT_CODE = REL.ACT_CODE and REE.REE_NORE = REL.REE_NORE and REE.REE_KEYU = REL.REE_KEYU
+                WHERE 1=1
+                    AND REE.ACT_CODE = 'COSMETIQUE' AND REE.REE_NORE IS NOT NULL AND REE.REE_NORE != '' AND REL.REA_RFCE IS NOT NULL AND REL.REA_RFCE != ''
+                    AND (
+                        select rea_rfti from REA_DAT 
+                        where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
+                    ) IS NOT NULL
+			        AND (
+                        select rea_rfti from REA_DAT 
+                        where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
+                    ) != ''
+                    AND REL.ART_CODE IS NOT NULL AND REL.ART_CODE != ''
+                    AND (
+                        select rea_crqi from REA_DAT 
+                        where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
+                    ) = 'Interface EUDL' --pour les tests
+                    AND REE.REE_ETRE = '200' -- =seulement les réceptions cloturées
+                    AND REE.REE_NORE = 41
+                ORDER BY 
+                    REE.REE_DARE DESC, REE.REE_NORE";
 
             using (var connection = new SqlConnection(_speedWmsConnectionString))
             {
                 try
                 {
                     // MODIFICATION RD 06/08/2025
-                    //await connection.OpenAsync();
+                    _logger.LogInformation($"Statut de la connexion avant Open : {connection.State}");
+                    await connection.OpenAsync();
+                    _logger.LogInformation($"Statut de la connexion après Open : {connection.State}");
 
                     _logger.LogInformation("🔍 Récupération des journaux de réception en attente...");
-                    const string sql = @"
-                        SELECT
-                            REE.REE_NORE,                      -- PackingSlipId
-                            --REL.REA_RFCE,                      -- DefaultTransactionReferenceNumber (était MVT.REA_RFTI)
-                            case 
-		                        when 
-                                    (
-                                        select 
-                                            rea_rfti 
-                                        from 
-                                            REA_DAT 
-                                        where 1=1	
-                                            and act_code = REE.ACT_CODE 
-                                            and REA_RFCE = REL.rea_rfce 
-                                            and ART_CODE = REL.art_code 
-                                            and REA_RFCL = REL.REA_RFCL
-                                    ) like '%SO%'
-			                    then 
-                                    (
-                                        case 
-                                            when 
-                                                CHARINDEX('-',REL.REA_RFCE) > 0 
-                                            then 
-                                                SUBSTRING(REL.REA_RFCE,1,CHARINDEX('-',REL.REA_RFCE)) else REL.REA_RFCE 
-                                        end
-                                    )
-		                        else 
-                                    (
-                                        select 
-                                            rea_rfti 
-                                        from 
-                                            REA_DAT 
-                                        where 1=1	
-                                            and act_code = REE.ACT_CODE 
-                                            and REA_RFCE = REL.rea_rfce 
-                                            and ART_CODE = REL.art_code 
-                                            and REA_RFCL = REL.REA_RFCL
-                                    ) 
-	                        end as REA_RFCE,                      -- DefaultTransactionReferenceNumber   
-                            REE.REE_DARE,                      -- TransactionDate
-                            REL.REL_NORL,                      -- LineNumber (était MVT.NoLR)
-                            substring(REL.ART_CODE,3,len(REL.ART_CODE)) as ART_CODE,                      -- ItemNumber
-                            REL.REL_QTRE,                      -- ItemQuantity (était ART_QTEUB)
-                            coalesce(REL.REL_LOT1,''),         -- ItemBatchNumber
-                            coalesce(REL.REL_DLUO,''),         -- ExpDate
-                            REL.REL_LOT2,                      -- ItemSerialNumber
-                            REE.REE_ETRE,                      -- Status
-                            REE.ACT_CODE,                      -- ActivityCode
-                            REE.REE_CCLI,                      -- DefaultReceivingWarehouseId
-                            REL.QUA_CODE                       -- ReceivingInventoryStatusId
-                        FROM 
-                            REE_DAT REE
-                        INNER JOIN 
-                            REL_DAT REL ON REE.ACT_CODE = REL.ACT_CODE and REE.REE_NORE = REL.REE_NORE and REE.REE_KEYU = REL.REE_KEYU
-                        WHERE 
-                            1=1
-                            AND REE.ACT_CODE = 'COSMETIQUE'
-                            AND REE.REE_NORE IS NOT NULL
-                            AND REE.REE_NORE != ''
-                            AND REL.REA_RFCE IS NOT NULL
-                            AND REL.REA_RFCE != ''
-                            AND (
-                                select rea_rfti 
-                                from REA_DAT 
-                                where 1=1	
-                                and act_code = REE.ACT_CODE 
-                                and REA_RFCE = REL.rea_rfce 
-                                and ART_CODE = REL.art_code 
-                                and REA_RFCL = REL.REA_RFCL
-                            ) IS NOT NULL
-			                AND (
-                                select rea_rfti 
-                                from REA_DAT 
-                                where 1=1	
-                                and act_code = REE.ACT_CODE 
-                                and REA_RFCE = REL.rea_rfce 
-                                and ART_CODE = REL.art_code 
-                                and REA_RFCL = REL.REA_RFCL
-                            ) != ''
-                            AND REL.ART_CODE IS NOT NULL
-                            AND REL.ART_CODE != ''
-                            AND (
-                                select rea_crqi 
-                                from REA_DAT 
-                                where 1=1	
-                                and act_code = REE.ACT_CODE 
-                                and REA_RFCE = REL.rea_rfce 
-                                and ART_CODE = REL.art_code 
-                                and REA_RFCL = REL.REA_RFCL
-                            ) = 'Interface EUDL' --pour les tests
-                            AND REE.REE_ETRE = '200' -- =seulement les réceptions cloturées
-                            --AND REE.REE_NORE = 35
-                        ORDER BY 
-                            REE.REE_DARE DESC, REE.REE_NORE";
 
                     //MODIFICATION RD 06/08/2025
                     //using var command = new SqlCommand(sql, connection);
-
-                    //AJOUT RD 06/08/2025
                     SqlCommand command = new SqlCommand(sql, connection);
-                    
-                    //AJOUT RD 06/08/2025
-                    //_logger.LogInformation(_speedWmsConnectionString);
-                    _logger.LogInformation($"Statut de la connexion avant Open : {connection.State}");
-                    connection.Open();
-                    _logger.LogInformation($"Statut de la connexion après Open : {connection.State}");
 
                     //MODIFICATION RD 06/08/2025
                     //using var reader = await command.ExecuteReaderAsync();
-                    using (SqlDataReader reader = command.ExecuteReader())
+                    SqlDataReader reader = await command.ExecuteReaderAsync();
+
+                    _logger.LogInformation("✅ Requête exécutée avec succès, lecture des données...");
+
+                    var journalDict = new Dictionary<string, ItemArrivalJournalData>();
+
+                    while (reader.Read())
                     {
-                        _logger.LogInformation("✅ Requête exécutée avec succès, lecture des données...");
 
-                        var journalDict = new Dictionary<string, ItemArrivalJournalData>();
+                        var packingSlipId = SafeGetInt(reader, "REE_NORE");          // PackingSlipId
+                        var transactionRefNumber = SafeGetString(reader, "REA_RFCE");   // DefaultTransactionReferenceNumber
+                        var lineNumber = SafeGetInt(reader, "REL_NORL");                // LineNumber
 
-                        while (reader.Read())
+                        //MODIFICATION RD 06/08/2025
+                        //if (int.IsNullOrEmpty(packingSlipId) || string.IsNullOrEmpty(transactionRefNumber))
+                        if (packingSlipId == 0 || string.IsNullOrEmpty(transactionRefNumber))
                         {
-
-                            var packingSlipId = SafeGetInt(reader, "REE_NORE");          // PackingSlipId
-                            var transactionRefNumber = SafeGetString(reader, "REA_RFCE");   // DefaultTransactionReferenceNumber
-                            var lineNumber = SafeGetInt(reader, "REL_NORL");                // LineNumber
-
-                            //MODIFICATION RD 06/08/2025
-                            //if (int.IsNullOrEmpty(packingSlipId) || string.IsNullOrEmpty(transactionRefNumber))
-                            if (packingSlipId == 0 || string.IsNullOrEmpty(transactionRefNumber))
-                            {
-                                continue;
-                            }
-
-                            var journalKey = $"{packingSlipId}_{transactionRefNumber}";
-
-                            if (!journalDict.ContainsKey(journalKey))
-                            {
-                                var journal = new ItemArrivalJournalData
-                                {
-                                    PackingSlipId = Convert.ToString(packingSlipId),                                 // REE_NORE
-                                    //MODIFICATION RD 08/08/2025
-                                    //JournalNumber = await GenerateJournalNumberAsync(connection),       // JournalNumber
-                                    JournalLog = await GenerateJournalNumberAsync(connection) + $"_{packingSlipId}", // JournalLog
-                                    
-                                    TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
-                                    TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE => dans les lignes
-                                    DataAreaId = "BR",                                             // DataAreaId (fixe)
-                                    JournalNameId = "ARR",                                         // JournalNameId (fixe)
-                                    DefaultReceivingSiteId = "S01",                                // DefaultReceivingSiteId (fixe)
-
-                                    //MODIFICATION RD 07/08/2025
-                                    //DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
-                                    DefaultReceivingWarehouseId = "12",
-
-                                    DefaultReceivingWarehouseLocationId = "RECNOLP"                // DefaultReceivingWarehouseLocationId (fixe)
-                                };
-
-                                journalDict[journalKey] = journal;
-                            }
-
-                            // Ajouter la ligne d'article
-                            var line = new ItemArrivalJournalLine
-                            {
-                                LineNumber = lineNumber,                                           // REL_NORL
-                                ItemNumber = SafeGetString(reader, "ART_CODE"),                   // ART_CODE
-                                ItemQuantity = SafeGetLong(reader, "REL_QTRE"),                   // ART_QTEU
-                                ItemBatchNumber = SafeGetString(reader, "REL_LOT1"),              // REL_LOT1
-                                ExpDate = SafeGetNullableDateTime(reader, "REL_DLUO"),            // REL_DLUO
-                                ItemSerialNumber = SafeGetString(reader, "REL_LOT2"),             // REL_LOT2
-                                ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
-                                    SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
-                            };
-
-                            if (!string.IsNullOrEmpty(line.ItemNumber) && line.ItemQuantity > 0)
-                            {
-                                journalDict[journalKey].Lines.Add(line);
-                            }
-
+                            continue;
                         }
 
-                        journals.AddRange(journalDict.Values);                        
+                        var journalKey = $"{packingSlipId}_{transactionRefNumber}";
 
-                        // Supprimer les journaux sans lignes
-                        journals.RemoveAll(j => j.Lines.Count == 0);
+                        if (!journalDict.ContainsKey(journalKey))
+                        {
+                            var journal = new ItemArrivalJournalData
+                            {
+                                PackingSlipId = Convert.ToString(packingSlipId),                                 // REE_NORE
+                                //MODIFICATION RD 08/08/2025
+                                //JournalNumber = await GenerateJournalNumberAsync(connection),       // JournalNumber
+                                JournalLog = await GenerateJournalNumberAsync(connection) + $"_{packingSlipId}", // JournalLog
 
-                        _logger.LogInformation($"✅ {journals.Count} journaux de réception récupérés");
+                                TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
+                                TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE => dans les lignes
+                                DataAreaId = "BR",                                             // DataAreaId (fixe)
+                                JournalNameId = "ARR",                                         // JournalNameId (fixe)
+                                DefaultReceivingSiteId = "S01",                                // DefaultReceivingSiteId (fixe)
 
-                        return journals;
+                                //MODIFICATION RD 07/08/2025
+                                //DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
+                                DefaultReceivingWarehouseId = "12",
+
+                                DefaultReceivingWarehouseLocationId = "RECNOLP"                // DefaultReceivingWarehouseLocationId (fixe)
+                            };
+
+                            journalDict[journalKey] = journal;
+                        }
+
+                            // Ajouter la ligne d'article
+                        var line = new ItemArrivalJournalLine
+                        {
+                            LineNumber = lineNumber,                                           // REL_NORL
+                            ItemNumber = SafeGetString(reader, "ART_CODE"),                   // ART_CODE
+                            ItemQuantity = SafeGetLong(reader, "REL_QTRE"),                   // ART_QTEU
+                            ItemBatchNumber = SafeGetString(reader, "REL_LOT1"),              // REL_LOT1
+                            ExpDate = SafeGetNullableDateTime(reader, "REL_DLUO"),            // REL_DLUO
+                            ItemSerialNumber = SafeGetString(reader, "REL_LOT2"),             // REL_LOT2
+                            ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
+                                SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
+                        };
+
+                        if (!string.IsNullOrEmpty(line.ItemNumber) && line.ItemQuantity > 0)
+                        {
+                            journalDict[journalKey].Lines.Add(line);
+                        }
+
                     }
 
-                    // var journalDict = new Dictionary<string, ItemArrivalJournalData>();
+                    journals.AddRange(journalDict.Values);
 
-                    // while (await reader.ReadAsync())
-                    // {
-                    //     var packingSlipId = SafeGetString(reader, "REE_NORE");          // PackingSlipId
-                    //     var transactionRefNumber = SafeGetString(reader, "REA_RFCE");   // DefaultTransactionReferenceNumber
-                    //     var lineNumber = SafeGetInt(reader, "REL_NORL");                // LineNumber
+                    // Supprimer les journaux sans lignes
+                    journals.RemoveAll(j => j.Lines.Count == 0);
 
-                    //     if (string.IsNullOrEmpty(packingSlipId) || string.IsNullOrEmpty(transactionRefNumber))
-                    //     {
-                    //         continue;
-                    //     }
+                    _logger.LogInformation($"✅ {journals.Count} journaux de réception récupérés");
 
-                    //     var journalKey = $"{packingSlipId}_{transactionRefNumber}";
-
-                    //     if (!journalDict.ContainsKey(journalKey))
-                    //     {
-                    //         var journal = new ItemArrivalJournalData
-                    //         {
-                    //             JournalNumber = await GenerateJournalNumberAsync(connection),  // JournalNumber
-                    //             PackingSlipId = packingSlipId,                                 // REE_NORE
-                    //             TransactionReferenceNumber = transactionRefNumber,             // REL.REA_RFCE
-                    //             TransactionDate = SafeGetDateTime(reader, "REE_DARE"),         // REE_DARE
-                    //             DataAreaId = "BR",                                             // DataAreaId (fixe)
-                    //             JournalNameId = "ARR",                                         // JournalNameId (fixe)
-                    //             DefaultReceivingSiteId = "S01",                                // DefaultReceivingSiteId (fixe)
-                    //             DefaultReceivingWarehouseId = SafeGetString(reader, "REE_CCLI"), // REE_CCLI
-                    //             DefaultReceivingWarehouseLocationId = "RECNOLP"                // DefaultReceivingWarehouseLocationId (fixe)
-                    //         };
-
-                    //         journalDict[journalKey] = journal;
-                    //     }
-
-                    //     // Ajouter la ligne d'article
-                    //     var line = new ItemArrivalJournalLine
-                    //     {
-                    //         LineNumber = lineNumber,                                           // REL_NORL
-                    //         ItemNumber = SafeGetString(reader, "ART_CODE"),                   // ART_CODE
-                    //         ItemQuantity = SafeGetLong(reader, "ART_QTEU"),                   // ART_QTEU
-                    //         ItemBatchNumber = SafeGetString(reader, "REL_LOT1"),              // REL_LOT1
-                    //         ExpDate = SafeGetNullableDateTime(reader, "REL_DLUO"),            // REL_DLUO
-                    //         ItemSerialNumber = SafeGetString(reader, "REL_LOT2"),             // REL_LOT2
-                    //         ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
-                    //             SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
-                    //     };
-
-                    //     if (!string.IsNullOrEmpty(line.ItemNumber) && line.ItemQuantity > 0)
-                    //     {
-                    //         journalDict[journalKey].Lines.Add(line);
-                    //     }
-                    // }
-
-                    // journals.AddRange(journalDict.Values);
-
-                    // // Supprimer les journaux sans lignes
-                    // journals.RemoveAll(j => j.Lines.Count == 0);
-
-                    // _logger.LogInformation($"✅ {journals.Count} journaux de réception récupérés");
-
-                    // return journals;
+                    return journals;
                 }
                 catch (Exception ex)
                 {
@@ -336,10 +228,10 @@ namespace DynamicsApiToDatabase.Services
              try
              {
                  var datePrefix = DateTime.Now.ToString("yyyyMM");
-                 var journalNumber = $"JA{datePrefix}{DateTime.Now:ddHHmmss}";
+                 var journalLog = $"JA{datePrefix}{DateTime.Now:ddHHmmss}";
 
-                 _logger.LogDebug($"📝 Numéro de journal généré: {journalNumber}");
-                 return journalNumber;
+                 _logger.LogDebug($"📝 Numéro de journal généré: {journalLog}");
+                 return journalLog;
              }
              catch (Exception ex)
              {
