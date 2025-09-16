@@ -1,5 +1,6 @@
 // Fichier: Services/ExternalProgramLauncher.cs
 // Service pour lancer le programme DynamicsToXmlTranslator après la synchronisation
+// VERSION MISE À JOUR pour la nouvelle structure séparée
 
 using System;
 using System.Diagnostics;
@@ -31,8 +32,9 @@ namespace DynamicsApiToDatabase.Services
         {
             try
             {
+                // ✅ NOUVEAU CHEMIN pour la structure séparée
                 var exePath = _configuration["ExternalPrograms:TranslatorPath"]
-                    ?? @"C:\Users\BDEQUEKER\OneDrive\Bureau\Eurodislog 2024-2025\API_BR\exe\Translator\Release\net8.0\DynamicsToXmlTranslator.exe";
+                    ?? @"C:\Users\BDEQUEKER\OneDrive\Bureau\Eurodislog 2024-2025\API_BR - exe\exe\Translator\DynamicsToXmlTranslator.exe";
 
                 var timeoutMinutes = _configuration.GetValue<int>("ExternalPrograms:TimeoutMinutes", 5);
                 var timeout = TimeSpan.FromMinutes(timeoutMinutes);
@@ -61,7 +63,8 @@ namespace DynamicsApiToDatabase.Services
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     CreateNoWindow = false,
-                    WindowStyle = ProcessWindowStyle.Normal
+                    WindowStyle = ProcessWindowStyle.Normal,
+                    WorkingDirectory = Path.GetDirectoryName(exePath) // ✅ AJOUT: Définir le répertoire de travail
                 };
 
                 _logger.LogInformation("🔄 Démarrage du processus...");
@@ -180,8 +183,9 @@ namespace DynamicsApiToDatabase.Services
         {
             try
             {
+                // ✅ NOUVEAU CHEMIN pour la structure séparée
                 var exePath = _configuration["ExternalPrograms:TranslatorPath"]
-                    ?? @"C:\Users\BDEQUEKER\OneDrive\Bureau\Eurodislog 2024-2025\API_BR\exe\Translator\Release\net8.0\DynamicsToXmlTranslator.exe";
+                    ?? @"C:\Users\BDEQUEKER\OneDrive\Bureau\Eurodislog 2024-2025\API_BR - exe\exe\Translator\DynamicsToXmlTranslator.exe";
 
                 bool exists = File.Exists(exePath);
 
@@ -201,6 +205,111 @@ namespace DynamicsApiToDatabase.Services
                 _logger.LogError(ex, "Erreur lors de la vérification de DynamicsToXmlTranslator");
                 return false;
             }
+        }
+
+        /// <summary>
+        /// ✅ MÉTHODE MISE À JOUR: Lance le translator avec des arguments spécifiques
+        /// </summary>
+        public async Task<bool> LaunchTranslatorWithArgsAsync(string args = "")
+        {
+            try
+            {
+                // ✅ NOUVEAU CHEMIN pour la structure séparée
+                var exePath = _configuration["ExternalPrograms:TranslatorPath"]
+                    ?? @"C:\Users\BDEQUEKER\OneDrive\Bureau\Eurodislog 2024-2025\API_BR - exe\exe\Translator\DynamicsToXmlTranslator.exe";
+
+                var timeoutMinutes = _configuration.GetValue<int>("ExternalPrograms:TimeoutMinutes", 5);
+                var timeout = TimeSpan.FromMinutes(timeoutMinutes);
+
+                var isEnabled = _configuration.GetValue<bool>("ExternalPrograms:TranslatorEnabled", true);
+                if (!isEnabled)
+                {
+                    _logger.LogInformation("🚫 DynamicsToXmlTranslator désactivé dans la configuration");
+                    return true;
+                }
+
+                _logger.LogInformation($"🚀 Lancement de DynamicsToXmlTranslator avec filtre: {args}");
+                _logger.LogInformation($"📂 Chemin: {exePath}");
+
+                if (!File.Exists(exePath))
+                {
+                    _logger.LogError($"❌ Le fichier DynamicsToXmlTranslator.exe n'existe pas: {exePath}");
+                    return false;
+                }
+
+                var processStartInfo = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    Arguments = args, // ← Passer l'argument (ex: "purchase")
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = false,
+                    WindowStyle = ProcessWindowStyle.Normal,
+                    WorkingDirectory = Path.GetDirectoryName(exePath) // ✅ AJOUT: Répertoire de travail
+                };
+
+                using var process = new Process { StartInfo = processStartInfo };
+
+                process.OutputDataReceived += (sender, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                    {
+                        _logger.LogInformation($"📤 Translator: {e.Data}");
+                    }
+                };
+
+                process.ErrorDataReceived += (sender, e) =>
+                {
+                    if (!string.IsNullOrEmpty(e.Data))
+                    {
+                        _logger.LogWarning($"⚠️ Translator Error: {e.Data}");
+                    }
+                };
+
+                var startTime = DateTime.Now;
+                bool started = process.Start();
+
+                if (!started)
+                {
+                    _logger.LogError("❌ Impossible de démarrer DynamicsToXmlTranslator");
+                    return false;
+                }
+
+                _logger.LogInformation($"✅ DynamicsToXmlTranslator démarré avec filtre '{args}' (PID: {process.Id})");
+
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
+                bool finished = await WaitForExitAsync(process, timeout);
+                var duration = DateTime.Now - startTime;
+
+                if (finished)
+                {
+                    var exitCode = process.ExitCode;
+                    _logger.LogInformation($"🏁 DynamicsToXmlTranslator terminé en {duration.TotalSeconds:F1}s (Code: {exitCode})");
+                    return exitCode == 0;
+                }
+                else
+                {
+                    _logger.LogWarning($"⏰ Timeout dépassé ({timeout.TotalMinutes} min)");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors du lancement de DynamicsToXmlTranslator");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE: Lance le translator avec un filtre spécifique (méthode simplifiée)
+        /// </summary>
+        public async Task<bool> LaunchTranslatorForTypeAsync(string filterType)
+        {
+            _logger.LogInformation($"📋 Lancement du Translator en mode filtré : {filterType}");
+            return await LaunchTranslatorWithArgsAsync(filterType);
         }
     }
 }
