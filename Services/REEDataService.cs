@@ -65,10 +65,19 @@ namespace DynamicsApiToDatabase.Services
                     coalesce(REL.REL_LOT1,'') as REL_LOT1,         -- ItemBatchNumber
                     coalesce(REL.REL_DLUO,'') as REL_DLUO,         -- ExpDate
                     REL.REL_LOT2,                      -- ItemSerialNumber
+                    coalesce((
+						select rea_alpha2 from REA_DAT where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL and rea_lot1 = REL.rel_lot1
+					),''),							   -- ReferenceInventoryLotId
                     REE.REE_ETRE,                      -- Status
                     REE.ACT_CODE,                      -- ActivityCode
                     REE.REE_CCLI,                      -- DefaultReceivingWarehouseId
-                    REL.QUA_CODE                       -- ReceivingInventoryStatusId
+                    case 
+						when REL.QUA_CODE = 'STD' then 'Disponible'
+						when REL.QUA_CODE = 'BQQA' then 'Disponible'
+						when REL.QUA_CODE = 'BQLOG' then 'Bloque3PL'
+						when REL.QUA_CODE = 'BQQAK' then 'Bloque3PL'
+						else 'Bloque3PL'
+					end as QUA_CODE                       -- ReceivingInventoryStatusId
                 FROM 
                     REE_DAT REE
                 INNER JOIN 
