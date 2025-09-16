@@ -67,7 +67,7 @@ namespace DynamicsApiToDatabase.Services
                     REL.REL_LOT2,                      -- ItemSerialNumber
                     coalesce((
 						select rea_alpha2 from REA_DAT where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL and rea_lot1 = REL.rel_lot1
-					),''),							   -- ReferenceInventoryLotId
+					),'') as REA_ALPHA2,							   -- ReferenceInventoryLotId
                     REE.REE_ETRE,                      -- Status
                     REE.ACT_CODE,                      -- ActivityCode
                     REE.REE_CCLI,                      -- DefaultReceivingWarehouseId
@@ -170,13 +170,15 @@ namespace DynamicsApiToDatabase.Services
                         var line = new ItemArrivalJournalLine
                         {
                             LineNumber = lineNumber,                                           // REL_NORL
+                            ReferenceInventoryLotId = SafeGetString(reader, "REA_ALPHA2"),    // REA_ALPHA2
                             ItemNumber = SafeGetString(reader, "ART_CODE"),                   // ART_CODE
                             ItemQuantity = SafeGetLong(reader, "REL_QTRE"),                   // ART_QTEU
                             ItemBatchNumber = SafeGetString(reader, "REL_LOT1"),              // REL_LOT1
                             ExpDate = SafeGetNullableDateTime(reader, "REL_DLUO"),            // REL_DLUO
                             ItemSerialNumber = SafeGetString(reader, "REL_LOT2"),             // REL_LOT2
-                            ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
-                                SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
+                            //ReceivingInventoryStatusId = MapQualityCodeToInventoryStatus(
+                            //    SafeGetString(reader, "QUA_CODE"))                            // QUA_CODE
+                            ReceivingInventoryStatusId = SafeGetString(reader, "QUA_CODE")     // QUA_CODE
                         };
 
                         if (!string.IsNullOrEmpty(line.ItemNumber) && line.ItemQuantity > 0)
@@ -206,28 +208,28 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// ✅ Mapping du code qualité SpeedWMS vers le statut d'inventaire Dynamics
         /// </summary>
-        private string MapQualityCodeToInventoryStatus(string qualityCode)
-        {
-            //MODIFICATION RD 07/08/2025
-            // return qualityCode?.ToUpper() switch
-            // {
-            //     "OK" => "Available",
-            //     "NOK" => "Blocked",
-            //     "QUAR" => "QuarantineOrdered",
-            //     "QUARANTINE" => "QuarantineOrdered",
-            //     "BLOCKED" => "Blocked",
-            //     _ => "Available" // Par défaut
-            // };
-            return qualityCode?.ToUpper() switch
-            {
-                "STD" => "Disponible",
-                "NOK" => "Bloque3PL",
-                "QUAR" => "QuarantineOrdered",
-                "QUARANTINE" => "QuarantineOrdered",
-                "BLOCKED" => "Bloque3PL",
-                _ => "Disponible" // Par défaut
-            };
-        }
+        // private string MapQualityCodeToInventoryStatus(string qualityCode)
+        // {
+        //     //MODIFICATION RD 07/08/2025
+        //     // return qualityCode?.ToUpper() switch
+        //     // {
+        //     //     "OK" => "Available",
+        //     //     "NOK" => "Blocked",
+        //     //     "QUAR" => "QuarantineOrdered",
+        //     //     "QUARANTINE" => "QuarantineOrdered",
+        //     //     "BLOCKED" => "Blocked",
+        //     //     _ => "Available" // Par défaut
+        //     // };
+        //     return qualityCode?.ToUpper() switch
+        //     {
+        //         "STD" => "Disponible",
+        //         "NOK" => "Bloque3PL",
+        //         "QUAR" => "QuarantineOrdered",
+        //         "QUARANTINE" => "QuarantineOrdered",
+        //         "BLOCKED" => "Bloque3PL",
+        //         _ => "Disponible" // Par défaut
+        //     };
+        // }
 
         /// <summary>
         /// ✅ Génère un numéro de journal unique

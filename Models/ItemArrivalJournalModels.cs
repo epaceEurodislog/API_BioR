@@ -87,6 +87,7 @@ namespace DynamicsApiToDatabase.Models
     public class ItemArrivalJournalLine
     {
         public int LineNumber { get; set; }                    // NoLR
+        public string ReferenceInventoryLotId { get; set; } = ""; // REA_ALPHA2
         public string ItemNumber { get; set; } = "";          // ART_CODE
         public long ItemQuantity { get; set; }                // ART_QTEUB (cumulée par NoLR)
         public string ItemBatchNumber { get; set; } = "";     // REL_LOT1
