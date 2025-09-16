@@ -41,23 +41,26 @@ namespace DynamicsApiToDatabase.Services
             
             const string sql = @"SELECT
                     REE.REE_NORE,                      -- PackingSlipId
-                    case 
-                        when (
-                            select rea_rfti from REA_DAT 
-                            where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
-                        ) like '%SO%'
-                        then (
-                            case 
-                                when CHARINDEX('-',REL.REA_RFCE) > 0 
-                                then SUBSTRING(REL.REA_RFCE,1,CHARINDEX('-',REL.REA_RFCE)) 
-                                else REL.REA_RFCE 
-                            end
-                        )
-                        else (
-                            select rea_rfti from REA_DAT 
-                            where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
-                        ) 
-                    end as REA_RFCE,                      -- DefaultTransactionReferenceNumber   
+                    --case 
+                    --    when (
+                    --        select rea_rfti from REA_DAT 
+                    --        where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
+                    --    ) like '%SO%'
+                    --    then (
+                    --        case 
+                    --            when CHARINDEX('-',REL.REA_RFCE) > 0 
+                    --            then SUBSTRING(REL.REA_RFCE,1,CHARINDEX('-',REL.REA_RFCE)) 
+                    --            else REL.REA_RFCE 
+                    --        end
+                    --    )
+                    --    else (
+                    --        select rea_rfti from REA_DAT 
+                    --        where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
+                    --    ) 
+                    --end as REA_RFCE,                      -- DefaultTransactionReferenceNumber   
+					(
+						select rea_rfce from REA_DAT where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
+					) as REA_RFCE,                     -- DefaultTransactionReferenceNumber 
                     REE.REE_DARE,                      -- TransactionDate
                     REL.REL_NORL,                      -- LineNumber (était MVT.NoLR)
                     substring(REL.ART_CODE,3,len(REL.ART_CODE)) as ART_CODE,                      -- ItemNumber
