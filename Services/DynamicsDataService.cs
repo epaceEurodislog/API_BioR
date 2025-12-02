@@ -323,11 +323,92 @@ namespace DynamicsApiToDatabase.Services
 
             result.UnchangedRecords = apiData.Count - filteredData.Count;
 
-            // ✅ CONFIRMATIONS EXISTANTES pour les commandes - CORRIGÉ
-            if (endpointName.ToUpper().Contains("ORDER"))
+            // ✅ NOUVEAU : Confirmation spéciale pour INT32
+            if (endpointName.ToUpper().Contains("ORDER") && IsInt32Order(endpointName))
             {
+                _logger.LogInformation($"🔄 [INT32] Confirmation de TOUTES les lignes en BDD pour {endpointName}");
+                var confirmationCount = await ConfirmAllInt32LinesInDatabaseAsync(endpointName, endpointPath);
+                _logger.LogInformation($"✅ {confirmationCount} lignes INT32 confirmées en BDD");
+            }
+            else if (endpointName.ToUpper().Contains("ORDER"))
+            {
+                // Confirmation normale pour Sales Orders
                 var confirmationCount = await ConfirmOrdersByTypeCorrectAsync(endpointName, filteredData);
                 _logger.LogInformation($"✅ {confirmationCount} commandes {endpointName} confirmées");
+            }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE : Détermine si c'est une commande INT32
+        /// </summary>
+        private bool IsInt32Order(string endpointName)
+        {
+            return endpointName.ToUpper() switch
+            {
+                "PURCHASEORDERS" or "BRINT32PURCHORDERTABLES" => true,
+                "RETURNORDERS" or "BRINT32RETURNORDERTABLES" => true,
+                "TRANSFERORDERS" or "BRINT32TRANSFERORDERTABLES" => true,
+                _ => false
+            };
+        }
+
+
+        
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE : Confirme TOUTES les lignes INT32 stockées en BDD (avec JSON_SENT = 0)
+        /// </summary>
+        private async Task<int> ConfirmAllInt32LinesInDatabaseAsync(string endpointName, string endpointPath)
+        {
+            try
+            {
+                var token = await _authService.GetAccessTokenAsync();
+                if (string.IsNullOrEmpty(token))
+                {
+                    _logger.LogWarning("Token d'authentification manquant pour les confirmations INT32");
+                    return 0;
+                }
+
+                // Récupérer TOUTES les lignes non confirmées en BDD
+                var unconfirmedLines = await _databaseService.GetUnconfirmedInt32LinesAsync(endpointPath);
+
+                if (unconfirmedLines.Count == 0)
+                {
+                    _logger.LogInformation($"✅ Aucune ligne INT32 à confirmer pour {endpointName}");
+                    return 0;
+                }
+
+                _logger.LogInformation($"📋 {unconfirmedLines.Count} lignes INT32 à confirmer pour {endpointName}");
+
+                int successCount = 0;
+
+                // Confirmer chaque ligne individuellement
+                foreach (var line in unconfirmedLines)
+                {
+                    bool success = await _statusConfirmationService.ConfirmSingleInt32LineAsync(
+                        token,
+                        line.PurchId,
+                        line.LineNumber,
+                        endpointName,
+                        line.OrderDocNum  // ✅ AJOUTÉ : Passer le PurchOrderDocNum
+                    );
+
+                    if (success)
+                    {
+                        successCount++;
+                        // Marquer comme confirmé en BDD
+                        await _databaseService.MarkInt32LineAsConfirmedAsync(line.JsonKeyU);
+                    }
+
+                    // Pause pour ne pas surcharger l'API
+                    await Task.Delay(100);
+                }
+
+                return successCount;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur confirmation INT32 en BDD pour {endpointName}");
+                return 0;
             }
         }
 
@@ -684,7 +765,8 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Génère une clé unique pour chaque enregistrement - MODIFIÉ avec PackingSlip
+        /// ✅ MODIFIÉ : Génère une clé unique pour chaque enregistrement
+        /// NOUVEAU : Pour INT32 (Purchase/Return/Transfer), retire les suffixes -2, -3, etc.
         /// </summary>
         private string GenerateUniqueKey(JsonElement item, string primaryKeyField, string endpointName)
         {
@@ -726,7 +808,9 @@ namespace DynamicsApiToDatabase.Services
                         if (item.TryGetProperty("ReturnItemNum", out var returnNum) &&
                             item.TryGetProperty("LineNum", out var returnLine))
                         {
-                            return $"RET_{returnNum.GetString()}_{returnLine}";
+                            // ✅ Nettoyer le ReturnItemNum en retirant les suffixes
+                            var cleanReturnNum = RemoveVersionSuffix(returnNum.GetString());
+                            return $"RET_{cleanReturnNum}_{returnLine}";
                         }
                         break;
 
@@ -735,7 +819,9 @@ namespace DynamicsApiToDatabase.Services
                         if (item.TryGetProperty("PurchId", out var purchId) &&
                             item.TryGetProperty("LineNumber", out var purchLine))
                         {
-                            return $"PURCH_{purchId.GetString()}_{purchLine}";
+                            // ✅ Nettoyer le PurchId en retirant les suffixes
+                            var cleanPurchId = RemoveVersionSuffix(purchId.GetString());
+                            return $"PURCH_{cleanPurchId}_{purchLine}";
                         }
                         break;
 
@@ -744,7 +830,9 @@ namespace DynamicsApiToDatabase.Services
                         if (item.TryGetProperty("TransferId", out var transferId) &&
                             item.TryGetProperty("LineNumber", out var transferLine))
                         {
-                            return $"TRANS_{transferId.GetString()}_{transferLine}";
+                            // ✅ Nettoyer le TransferId en retirant les suffixes
+                            var cleanTransferId = RemoveVersionSuffix(transferId.GetString());
+                            return $"TRANS_{cleanTransferId}_{transferLine}";
                         }
                         break;
                 }
@@ -761,6 +849,33 @@ namespace DynamicsApiToDatabase.Services
                 var timestamp = DateTimeOffset.Now.ToUnixTimeSeconds();
                 return $"HASH_{contentHash}_{timestamp}";
             }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE : Retire les suffixes de version (-2, -3, -4, etc.)
+        /// Exemples:
+        /// - "OA24000526-2" → "OA24000526"
+        /// - "OA24000526-12" → "OA24000526"
+        /// - "OA24000526" → "OA24000526" (inchangé si pas de suffixe)
+        /// </summary>
+        private string RemoveVersionSuffix(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return string.Empty;
+
+            // Pattern: retire tout ce qui suit un tiret suivi de chiffres à la fin
+            // Exemple: "OA24000526-2" → "OA24000526"
+            var match = System.Text.RegularExpressions.Regex.Match(value, @"^(.+?)-\d+$");
+
+            if (match.Success)
+            {
+                var cleanValue = match.Groups[1].Value;
+                _logger.LogDebug($"🧹 Nettoyage version: '{value}' → '{cleanValue}'");
+                return cleanValue;
+            }
+
+            // Pas de suffixe détecté, retourner la valeur d'origine
+            return value;
         }
 
         /// <summary>

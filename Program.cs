@@ -385,7 +385,8 @@ namespace DynamicsApiToDatabase
         private static IServiceCollection ConfigureServices()
         {
             var configuration = new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
+                //.SetBasePath(Directory.GetCurrentDirectory())
+                .SetBasePath("D:/_Eurodislog/API_BR/API_BioR")
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
                 .Build();
 
@@ -408,6 +409,7 @@ namespace DynamicsApiToDatabase
             services.AddSingleton<AuthenticationService>();
             services.AddSingleton<SqlServerDatabaseService>();
             services.AddSingleton<DynamicsDataService>();
+            services.AddSingleton<SimplePurchaseLogger>();
             services.AddSingleton<StatusConfirmationService>();
 
             // ✅ CORRECTION CRITIQUE : Interface et implémentation
@@ -585,6 +587,8 @@ namespace DynamicsApiToDatabase
             var services = ConfigureServices();
             var serviceProvider = services.BuildServiceProvider();
 
+            var blExportService = serviceProvider.GetRequiredService<BLExportService>();
+
             // Authentification
             var authService = serviceProvider.GetRequiredService<AuthenticationService>();
             var token = await authService.GetAccessTokenAsync();
@@ -610,7 +614,8 @@ namespace DynamicsApiToDatabase
 
                 case "purchase":
                     Console.WriteLine("\n💰 === SYNCHRONISATION PURCHASE ORDERS UNIQUEMENT === 💰");
-                    await SyncEndpoint(dynamicsService, token, "PurchaseOrders", "data/BRINT32PurchOrderTables", "PurchId");
+                    //await SyncEndpoint(dynamicsService, token, "PurchaseOrders", "data/BRINT32PurchOrderTables", "PurchId");
+                    await SyncEndpoint(dynamicsService, token, "PurchaseOrders", "data/BRINT32PurchOrderTables", "OrderDocNum");
                     await LaunchTranslatorIfNeeded(serviceProvider, "purchase");
                     break;
 
@@ -632,9 +637,21 @@ namespace DynamicsApiToDatabase
                     await LaunchTranslatorIfNeeded(serviceProvider, "sales");
                     break;
 
+                case "cr_prep":
+                    Console.WriteLine("\n🛒 === SYNCHRONISATION CONFIRMATION DE PREPARATION UNIQUEMENT === 🛒");
+                    //await SyncEndpoint(dynamicsService, token, "SalesOrders", "data/BRPackingSlipInterfaces", "WMSTRansRecId");
+                    await ProcessBLExportAsync(blExportService, token);
+                    break;
+
+                case "cr_recep":
+                    Console.WriteLine("\n🛒 === SYNCHRONISATION CONFIRMATION DE RECEPTION UNIQUEMENT === 🛒");
+                    //await SyncEndpoint(dynamicsService, token, "SalesOrders", "data/BRPackingSlipInterfaces", "WMSTRansRecId");
+                    await ProcessItemArrivalJournalsAsync(serviceProvider, token);
+                    break;
+
                 default:
                     Console.WriteLine($"❌ Type de synchronisation non reconnu : {syncType}");
-                    Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales");
+                    Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales, cr_prep, cr_recep");
                     Environment.Exit(1);
                     break;
             }
@@ -710,6 +727,8 @@ namespace DynamicsApiToDatabase
                 "return" => "return",              // ✅ Return Orders -> return
                 "transfer" => "transfer",          // ✅ Transfer Orders -> transfer
                 "sales" => "sales",                // ✅ Sales Orders (PackingSlips) -> sales
+                "cr_prep" => "cr_prep",            // ✅ Confirmation de préparation -> cr_prep
+                "cr_recep" => "cr_recep",          // ✅ Confirmation de réception -> cr_recep
                 _ => ""                            // Mode complet si type non reconnu
             };
         }
