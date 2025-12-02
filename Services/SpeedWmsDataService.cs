@@ -122,7 +122,7 @@ namespace DynamicsApiToDatabase.Services
             AND OPE_STAT = '070'  -- Seulement les BL en préparation (statut 070)
             -- 🧪 FILTRE TEST : Seulement OPE_ALPHA17 = PP000283
             -- AND OPE_ALPHA17 in ('PP000285', 'PP000282')
-            AND OPE_REDO = 'OT000511' -- Filtrer par OPE_REDO spécifique
+            -- AND OPE_REDO = 'OT000511' -- Filtrer par OPE_REDO spécifique
             ORDER BY OPE_KEYU";
 
                 using var command = new SqlCommand(sql, connection);
@@ -148,12 +148,11 @@ namespace DynamicsApiToDatabase.Services
                     blHeaders.Add(blData);
                 }
 
-                // 🧪 LOG DE TEST
-                _logger.LogWarning($"🧪 FILTRE TEST ACTIF : Seulement OPE_ALPHA17='PP000283' - {blHeaders.Count} BL trouvé(s)");
+                _logger.LogInformation($"📋 {blHeaders.Count} BL trouvé(s) dans SpeedWMS");
 
                 foreach (var bl in blHeaders)
                 {
-                    _logger.LogWarning($"🧪 BL TEST: {bl.OpeKeyu} | ALPHA17={bl.OpeAlpha17} | REDO={bl.OpeRedo}");
+                    _logger.LogDebug($"📦 BL trouvé: {bl.OpeKeyu} | ALPHA17={bl.OpeAlpha17} | REDO={bl.OpeRedo}");
                 }
 
                 return blHeaders;
@@ -752,6 +751,20 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+        /// Retire le préfixe client (2 premiers caractères) du code article
+        /// Exemple: "BRGANTC" devient "GANTC"
+        /// </summary>
+        private string CleanItemId(string artCode)
+        {
+            if (string.IsNullOrEmpty(artCode) || artCode.Length <= 2)
+            {
+                return artCode;
+            }
+
+            return artCode.Substring(2);
+        }
+
+        /// <summary>
         /// Transforme et regroupe les lignes d'articles
         /// </summary>
         private async Task<List<BLExportLine>> TransformBLLinesAsync(List<SpeedWmsBLLine> speedLines)
@@ -765,7 +778,7 @@ namespace DynamicsApiToDatabase.Services
             {
                 var exportLine = new BLExportLine
                 {
-                    ItemId = group.Key,
+                    ItemId = CleanItemId(group.Key),
                     TotalQuantity = group.Sum(l => l.QttePreparee),
                     PlannedQuantity = group.Sum(l => l.QttePrevue),
                     MissingQuantity = group.Sum(l => l.QtteManquante),

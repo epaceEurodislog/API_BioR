@@ -159,6 +159,8 @@ sample_data/
 *.cer
 *.pem
 
+BL_Payloads/
+
 # ===== KEEP THESE FILES =====
 # (Commentaires pour clarifier ce qu'il faut garder)
 # Program.cs - ✓ À commiter

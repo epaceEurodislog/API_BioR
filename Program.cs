@@ -408,6 +408,7 @@ namespace DynamicsApiToDatabase
             services.AddSingleton<AuthenticationService>();
             services.AddSingleton<SqlServerDatabaseService>();
             services.AddSingleton<DynamicsDataService>();
+            services.AddSingleton<SimplePurchaseLogger>();
             services.AddSingleton<StatusConfirmationService>();
 
             // ✅ CORRECTION CRITIQUE : Interface et implémentation
@@ -422,6 +423,7 @@ namespace DynamicsApiToDatabase
             services.AddSingleton<IREEDataService, REEDataService>(); // Service pour les données REE
             services.AddSingleton<SpeedWmsDataService>(); // Service pour SpeedWMS
             services.AddSingleton<BLExportService>(); // Service d'export BL
+
 
             return services;
         }
@@ -632,9 +634,15 @@ namespace DynamicsApiToDatabase
                     await LaunchTranslatorIfNeeded(serviceProvider, "sales");
                     break;
 
+                case "blexport":
+                    Console.WriteLine("\n📦 === EXPORT BL SPEEDWMS UNIQUEMENT === 📦");
+                    var blExportService = serviceProvider.GetRequiredService<BLExportService>();
+                    await ProcessBLExportAsync(blExportService, token);
+                    break;
+
                 default:
                     Console.WriteLine($"❌ Type de synchronisation non reconnu : {syncType}");
-                    Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales");
+                    Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales, blexport");
                     Environment.Exit(1);
                     break;
             }

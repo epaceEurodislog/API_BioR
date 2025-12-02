@@ -448,9 +448,10 @@ namespace DynamicsApiToDatabase.Services
                 var endpoint = $"{_baseUrl}/{_config.ValidationEndpoint}";
                 _logger.LogDebug($"📤 Envoi données BL {bl.BLNumber} vers {endpoint}");
 
-                foreach (var payload in payloads)
+                // 🔢 MODIFIER : Passer l'index à chaque payload
+                for (int i = 0; i < payloads.Count; i++)
                 {
-                    var success = await SendSinglePayloadAsync(authToken, endpoint, payload, bl.BLNumber);
+                    var success = await SendSinglePayloadAsync(authToken, endpoint, payloads[i], bl.BLNumber, i);
                     if (success)
                     {
                         successCount++;
@@ -487,10 +488,13 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Envoie un payload individuel
         /// </summary>
-        private async Task<bool> SendSinglePayloadAsync(string authToken, string endpoint, BRPackingSlipValidationPayload payload, string blNumber)
+        private async Task<bool> SendSinglePayloadAsync(string authToken, string endpoint, BRPackingSlipValidationPayload payload, string blNumber, int payloadIndex = 0)
         {
             try
             {
+                // 💾 NOUVEAU : Sauvegarder le payload avant envoi
+                await SavePayloadToFileAsync(blNumber, payloadIndex, payload);
+
                 var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
                 {
                     PropertyNamingPolicy = null,
@@ -606,6 +610,37 @@ namespace DynamicsApiToDatabase.Services
             }
 
             return bl.PickingRouteId;
+        }
+
+        /// <summary>
+        /// Sauvegarde le payload JSON dans un fichier pour déboguer
+        /// </summary>
+        private async Task SavePayloadToFileAsync(string blNumber, int index, BRPackingSlipValidationPayload payload)
+        {
+            try
+            {
+                var logsPath = Path.Combine(Directory.GetCurrentDirectory(), "BL_Payloads");
+                Directory.CreateDirectory(logsPath);
+
+                var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+                var fileName = $"{blNumber}_payload_{index:D3}_{timestamp}.json";
+                var filePath = Path.Combine(logsPath, fileName);
+
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+                };
+
+                var jsonContent = JsonSerializer.Serialize(payload, options);
+                await File.WriteAllTextAsync(filePath, jsonContent);
+
+                _logger.LogDebug($"💾 Payload sauvegardé: {fileName}");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, $"⚠️ Impossible de sauvegarder le payload {blNumber}");
+            }
         }
 
         /// <summary>

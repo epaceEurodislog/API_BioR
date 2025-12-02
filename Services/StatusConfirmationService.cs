@@ -24,17 +24,20 @@ namespace DynamicsApiToDatabase.Services
         private readonly ILogger<StatusConfirmationService> _logger;
         private readonly JsonOutService _jsonOutService;
         private readonly string _baseUrl;
+        private readonly SimplePurchaseLogger _purchaseLogger;
 
         public StatusConfirmationService(
             HttpClient httpClient,
             IConfiguration configuration,
             ILogger<StatusConfirmationService> logger,
-            JsonOutService jsonOutService)
+            JsonOutService jsonOutService,
+            SimplePurchaseLogger purchaseLogger)  // ✅ AJOUTER CE PARAMÈTRE
         {
             _httpClient = httpClient;
             _configuration = configuration;
             _logger = logger;
             _jsonOutService = jsonOutService;
+            _purchaseLogger = purchaseLogger;  // ✅ AJOUTER CETTE LIGNE
             _baseUrl = configuration["ResourceUrl"]?.TrimEnd('/')
                 ?? throw new ArgumentNullException("ResourceUrl manquante");
         }
@@ -90,6 +93,77 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogError(ex, $"❌ Exception confirmation {itemId}");
                 await _jsonOutService.LogJsonSentAsync($"{itemId}_EXCEPTION", ex.Message, "EXCEPTION");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// ✅ MODIFIÉ : Confirme une seule ligne INT32 spécifique dans Dynamics
+        /// Purchase Orders : Utilise PurchOrderDocNum (ex: "OA24000761-2")
+        /// Return/Transfer : Utilise OrderId + LineNumber
+        /// </summary>
+        public async Task<bool> ConfirmSingleInt32LineAsync(string token, string orderId, int lineNumber, string orderType, string orderDocNum = "")
+        {
+            try
+            {
+                string endpoint;
+                bool isPurchaseOrder = orderType.ToUpper().Contains("PURCHASE");
+
+                if (isPurchaseOrder && !string.IsNullOrEmpty(orderDocNum))
+                {
+                    // ✅ Purchase Orders : Utiliser PurchOrderDocNum pour cibler la version exacte
+                    _logger.LogDebug($"🔄 [PURCHASE] Confirmation via PurchOrderDocNum: {orderDocNum}");
+                    endpoint = $"{_baseUrl}/data/BRINT32PurchOrderTables(dataAreaId='BR',PurchOrderDocNum='{orderDocNum}')";
+                }
+                else
+                {
+                    // Return/Transfer Orders : Utiliser la méthode classique avec OrderId + LineNumber
+                    _logger.LogDebug($"🔄 [{orderType}] Confirmation ligne {orderId} - Line {lineNumber}");
+
+                    endpoint = orderType.ToUpper() switch
+                    {
+                        "PURCHASEORDERS" or "BRINT32PURCHORDERTABLES" =>
+                            $"{_baseUrl}/data/BRINT32PurchOrderTables(dataAreaId='BR',PurchId='{orderId}',LineNumber={lineNumber})",
+
+                        "RETURNORDERS" or "BRINT32RETURNORDERTABLES" =>
+                            $"{_baseUrl}/data/BRINT32ReturnOrderTables(dataAreaId='BR',ReturnItemNum='{orderId}',LineNum={lineNumber})",
+
+                        "TRANSFERORDERS" or "BRINT32TRANSFERORDERTABLES" =>
+                            $"{_baseUrl}/data/BRINT32TransferOrderTables(dataAreaId='BR',TransferId='{orderId}',LineNumber={lineNumber})",
+
+                        _ => throw new ArgumentException($"Type de commande non reconnu: {orderType}")
+                    };
+                }
+
+                // Payload pour mettre à jour le statut
+                var payload = new { INT3PLStatus = "ProcessedBy3PL" };
+                var jsonPayload = JsonSerializer.Serialize(payload);
+                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                _httpClient.DefaultRequestHeaders.Clear();
+                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                _logger.LogDebug($"📤 PATCH: {endpoint}");
+
+                // Envoyer PATCH
+                var response = await _httpClient.PatchAsync(endpoint, content);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"✅ Ligne confirmée: {(isPurchaseOrder && !string.IsNullOrEmpty(orderDocNum) ? orderDocNum : $"{orderId}-L{lineNumber}")}");
+                    return true;
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogWarning($"⚠️ Échec confirmation: {response.StatusCode} - {errorContent}");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception confirmation ligne");
                 return false;
             }
         }
@@ -210,6 +284,7 @@ namespace DynamicsApiToDatabase.Services
 
         /// <summary>
         /// Confirme une Purchase Order et met à jour INT3PLStatus
+        /// ✅ MODIFICATION : Confirme TOUTES les versions d'une Purchase Order
         /// </summary>
         public async Task<bool> ConfirmPurchaseOrderWithStatusUpdateAsync(string token, string purchId, string int3plStatus = "Processed")
         {
@@ -217,53 +292,161 @@ namespace DynamicsApiToDatabase.Services
             {
                 _logger.LogInformation($"📤 Confirmation Purchase Order avec INT3PLStatus: {purchId}");
 
-                var endpoint = $"{_baseUrl}/api/services/BRINT32ServiceGroup/BRINT32Service/updatePurchOrderStatus";
+                // ✅ NOUVEAU : Récupérer TOUTES les versions
+                var purchTableVersions = await GetAllPurchTableVersionsAsync(purchId);
 
-                var payload = new
+                if (purchTableVersions.Count == 0)
                 {
-                    _dataAreaId = "BR",
-                    _id = purchId,
-                    _status = 2  // Processed
-                };
+                    _logger.LogError($"❌ Aucune version trouvée pour Purchase Order {purchId}");
 
-                var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = null
-                });
+                    _purchaseLogger.LogPurchaseOrderSent(
+                        purchId,
+                        "N/A",
+                        "updatePurchOrderStatus",
+                        false,
+                        "Aucune PurchTableVersion trouvée");
 
-                await _jsonOutService.LogJsonSentAsync($"PURCH_STATUS_{purchId}", jsonPayload, endpoint);
-
-                _httpClient.DefaultRequestHeaders.Clear();
-                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
-                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
-
-                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-                var response = await _httpClient.PostAsync(endpoint, content);
-                var responseContent = await response.Content.ReadAsStringAsync();
-
-                if (response.IsSuccessStatusCode)
-                {
-                    _logger.LogInformation($"✅ Purchase Order {purchId} confirmée avec succès");
-                    await _jsonOutService.LogSuccessAsync($"PURCH_STATUS_{purchId}", responseContent);
-
-                    await UpdatePurchaseOrderLinesInt3PLStatusAsync(token, purchId, int3plStatus);
-
-                    return true;
-                }
-                else
-                {
-                    var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
-                    _logger.LogError($"❌ Erreur Purchase Order {purchId}: {errorMessage}");
-                    await _jsonOutService.LogErrorAsync($"PURCH_STATUS_{purchId}", jsonPayload, errorMessage, (int)response.StatusCode);
                     return false;
                 }
+
+                _logger.LogInformation($"📋 {purchTableVersions.Count} version(s) trouvée(s) pour {purchId}: {string.Join(", ", purchTableVersions)}");
+
+                var endpoint = $"{_baseUrl}/api/services/BRINT32ServiceGroup/BRINT32Service/updatePurchOrderStatus";
+
+                bool allSuccess = true;
+                int successCount = 0;
+
+                // ✅ NOUVEAU : Boucle sur TOUTES les versions
+                foreach (var purchTableVersion in purchTableVersions)
+                {
+                    _logger.LogInformation($"🔄 Traitement version {purchTableVersion}...");
+
+                    var payload = new
+                    {
+                        _dataAreaId = "BR",
+                        _id = purchTableVersion,
+                        _status = 2
+                    };
+
+                    var jsonPayload = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+                    {
+                        PropertyNamingPolicy = null
+                    });
+
+                    await _jsonOutService.LogJsonSentAsync($"PURCH_STATUS_{purchId}_V{purchTableVersion}", jsonPayload, endpoint);
+
+                    _httpClient.DefaultRequestHeaders.Clear();
+                    _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
+                    _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
+
+                    var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
+
+                    var response = await _httpClient.PostAsync(endpoint, content);
+                    var responseContent = await response.Content.ReadAsStringAsync();
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        _logger.LogInformation($"✅ Purchase Order {purchId} version {purchTableVersion} confirmée avec succès");
+                        await _jsonOutService.LogSuccessAsync($"PURCH_STATUS_{purchId}_V{purchTableVersion}", responseContent);
+
+                        _purchaseLogger.LogPurchaseOrderSent(
+                            $"{purchId} (v{purchTableVersion})",
+                            purchTableVersion,
+                            endpoint,
+                            true);
+
+                        _purchaseLogger.LogPurchaseOrderDetails(
+                            $"{purchId} (v{purchTableVersion})",
+                            purchTableVersion,
+                            jsonPayload,
+                            true,
+                            responseContent);
+
+                        successCount++;
+                    }
+                    else
+                    {
+                        var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
+                        _logger.LogError($"❌ Erreur Purchase Order {purchId} version {purchTableVersion}: {errorMessage}");
+                        await _jsonOutService.LogErrorAsync($"PURCH_STATUS_{purchId}_V{purchTableVersion}", jsonPayload, errorMessage, (int)response.StatusCode);
+
+                        _purchaseLogger.LogPurchaseOrderSent(
+                            $"{purchId} (v{purchTableVersion})",
+                            purchTableVersion,
+                            endpoint,
+                            false,
+                            errorMessage);
+
+                        allSuccess = false;
+                    }
+
+                    // Pause entre chaque version
+                    await Task.Delay(300);
+                }
+
+                // Mettre à jour les lignes seulement si au moins une version a réussi
+                if (successCount > 0)
+                {
+                    await UpdatePurchaseOrderLinesInt3PLStatusAsync(token, purchId, int3plStatus);
+                }
+
+                _logger.LogInformation($"📊 Résultat {purchId}: {successCount}/{purchTableVersions.Count} versions confirmées");
+
+                return allSuccess;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, $"❌ Exception Purchase Order {purchId}");
                 await _jsonOutService.LogErrorAsync($"PURCH_STATUS_{purchId}", "", ex.Message);
+
+                _purchaseLogger.LogPurchaseOrderSent(
+                    purchId,
+                    "ERROR",
+                    "updatePurchOrderStatus",
+                    false,
+                    ex.Message);
+
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// ✅ MÉTHODE MODIFIÉE : Récupère toutes les versions
+        /// </summary>
+        private async Task<List<string>> GetAllPurchTableVersionsAsync(string purchId)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+
+                return await sqlServerService.GetAllPurchTableVersionsAsync(purchId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération versions pour Purchase Order {purchId}");
+                return new List<string>();
+            }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE : Récupère le PurchTableVersion d'une Purchase Order
+        /// </summary>
+        private async Task<string> GetPurchTableVersionAsync(string purchId)
+        {
+            try
+            {
+                var loggerFactory = LoggerFactory.Create(builder => builder.AddConsole());
+                var sqlLogger = loggerFactory.CreateLogger<SqlServerDatabaseService>();
+                var sqlServerService = new SqlServerDatabaseService(_configuration, sqlLogger);
+
+                return await sqlServerService.GetPurchTableVersionAsync(purchId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération PurchTableVersion pour Purchase Order {purchId}");
+                return string.Empty;
             }
         }
 

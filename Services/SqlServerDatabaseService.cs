@@ -164,28 +164,52 @@ namespace DynamicsApiToDatabase.Services
 
                 var contentHash = ComputeHash(jsonData);
 
-                // Vérifier si cet enregistrement existe déjà
-                var existingRecord = await GetExistingRecordAsync(connection, businessKey, endpoint);
+                // ✅ NOUVEAU : Identifier si c'est un endpoint INT32 (commandes)
+                bool isInt32Endpoint = IsInt32Endpoint(endpoint);
 
-                if (existingRecord.HasValue)
+                if (isInt32Endpoint)
                 {
-                    // Si le hash a changé, mettre à jour
-                    if (existingRecord.Value.Hash != contentHash)
+                    // ✅ MODE HISTORIQUE : Vérifier si ce hash existe déjà dans l'historique
+                    bool hashExists = await HashExistsInHistoryAsync(connection, businessKey, endpoint, contentHash);
+
+                    if (hashExists)
                     {
-                        _logger.LogDebug($"🔄 Mise à jour de {businessKey} (contenu modifié)");
-                        return await UpdateExistingRecordAsync(connection, existingRecord.Value.Id, jsonData, contentHash, status);
+                        // ✅ Ce contenu existe déjà dans l'historique → Ne rien faire
+                        _logger.LogDebug($"➖ [INT32-HISTORIQUE] {businessKey} - Hash existant dans l'historique (pas d'INSERT)");
+                        return true;
                     }
                     else
                     {
-                        _logger.LogDebug($"➖ {businessKey} inchangé");
-                        return true; // Données identiques, rien à faire
+                        // ✅ Nouveau contenu → INSERT nouvelle version
+                        _logger.LogDebug($"📥 [INT32-HISTORIQUE] Nouvelle version de {businessKey} (hash différent de toutes les versions)");
+                        return await InsertNewRecordAsync(connection, businessKey, jsonData, endpoint, contentHash, status);
                     }
                 }
                 else
                 {
-                    // Nouvel enregistrement
-                    _logger.LogDebug($"📥 Nouveau: {businessKey}");
-                    return await InsertNewRecordAsync(connection, businessKey, jsonData, endpoint, contentHash, status);
+                    // ✅ MODE NORMAL : Comportement d'origine pour les autres endpoints (Articles, etc.)
+                    var existingRecord = await GetExistingRecordAsync(connection, businessKey, endpoint);
+
+                    if (existingRecord.HasValue)
+                    {
+                        // Si le hash a changé, mettre à jour
+                        if (existingRecord.Value.Hash != contentHash)
+                        {
+                            _logger.LogDebug($"🔄 Mise à jour de {businessKey} (contenu modifié)");
+                            return await UpdateExistingRecordAsync(connection, existingRecord.Value.Id, jsonData, contentHash, status);
+                        }
+                        else
+                        {
+                            _logger.LogDebug($"➖ {businessKey} inchangé");
+                            return true; // Données identiques, rien à faire
+                        }
+                    }
+                    else
+                    {
+                        // Nouvel enregistrement
+                        _logger.LogDebug($"📥 Nouveau: {businessKey}");
+                        return await InsertNewRecordAsync(connection, businessKey, jsonData, endpoint, contentHash, status);
+                    }
                 }
             }
             catch (Exception ex)
@@ -196,11 +220,165 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Recherche un enregistrement existant par clé métier + endpoint
+        /// ✅ NOUVELLE MÉTHODE : Détermine si l'endpoint est de type INT32
+        /// </summary>
+        private bool IsInt32Endpoint(string endpoint)
+        {
+            return endpoint switch
+            {
+                "data/BRINT32PurchOrderTables" => true,
+                "data/BRINT32ReturnOrderTables" => true,
+                "data/BRINT32TransferOrderTables" => true,
+                _ => false
+            };
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE : Récupère toutes les lignes INT32 non confirmées en BDD
+        /// </summary>
+        public async Task<List<Int32LineInfo>> GetUnconfirmedInt32LinesAsync(string endpointPath)
+        {
+            var lines = new List<Int32LineInfo>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                string orderIdField = endpointPath switch
+                {
+                    var path when path.Contains("PurchOrderTables") => "PurchId",
+                    var path when path.Contains("ReturnOrderTables") => "ReturnItemNum",
+                    var path when path.Contains("TransferOrderTables") => "TransferId",
+                    _ => "OrderId"
+                };
+
+                // Champ document number selon le type
+                string docNumField = endpointPath switch
+                {
+                    var path when path.Contains("PurchOrderTables") => "PurchOrderDocNum",
+                    var path when path.Contains("ReturnOrderTables") => "ReturnOrderDocNum",
+                    var path when path.Contains("TransferOrderTables") => "TransferOrderDocNum",
+                    _ => "OrderDocNum"
+                };
+
+                var sql = $@"
+            SELECT 
+                JSON_KEYU,
+                JSON_VALUE(JSON_DATA, '$.{orderIdField}') as OrderId,
+                JSON_VALUE(JSON_DATA, '$.{docNumField}') as OrderDocNum,
+                JSON_VALUE(JSON_DATA, '$.LineNumber') as LineNumber,
+                JSON_VALUE(JSON_DATA, '$.INT3PLStatus') as CurrentStatus
+            FROM JSON_IN 
+            WHERE JSON_FROM = @EndpointPath
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            AND ISNULL(JSON_SENT, 0) = 0
+            AND (
+                JSON_VALUE(JSON_DATA, '$.INT3PLStatus') IS NULL
+                OR JSON_VALUE(JSON_DATA, '$.INT3PLStatus') = 'None'
+                OR JSON_VALUE(JSON_DATA, '$.INT3PLStatus') = ''
+            )
+            ORDER BY JSON_VALUE(JSON_DATA, '$.{orderIdField}'), 
+                     CAST(JSON_VALUE(JSON_DATA, '$.LineNumber') AS INT)";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@EndpointPath", endpointPath);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var orderId = reader.IsDBNull("OrderId") ? "" : reader.GetString("OrderId");
+                    var orderDocNum = reader.IsDBNull("OrderDocNum") ? "" : reader.GetString("OrderDocNum");
+                    var lineNumber = reader.IsDBNull("LineNumber") ? 0 : int.Parse(reader.GetString("LineNumber"));
+
+                    if (!string.IsNullOrEmpty(orderId))
+                    {
+                        lines.Add(new Int32LineInfo
+                        {
+                            JsonKeyU = reader.GetInt32("JSON_KEYU"),
+                            PurchId = orderId,
+                            OrderDocNum = orderDocNum,
+                            LineNumber = lineNumber,
+                            CurrentStatus = reader.IsDBNull("CurrentStatus") ? "" : reader.GetString("CurrentStatus")
+                        });
+                    }
+                }
+
+                _logger.LogInformation($"📊 {lines.Count} lignes INT32 non confirmées trouvées dans {endpointPath}");
+                return lines;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération lignes INT32 non confirmées pour {endpointPath}");
+                return lines;
+            }
+        }
+
+        /// <summary>
+        /// Classe pour représenter une ligne INT32 à confirmer
+        /// </summary>
+        public class Int32LineInfo
+        {
+            public int JsonKeyU { get; set; }
+            public string PurchId { get; set; } = "";
+            public string OrderDocNum { get; set; } = "";  // ✅ AJOUTÉ
+            public int LineNumber { get; set; }
+            public string CurrentStatus { get; set; } = "";
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE : Marque une ligne INT32 comme confirmée en BDD
+        /// </summary>
+        public async Task<bool> MarkInt32LineAsConfirmedAsync(int jsonKeyU)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            UPDATE JSON_IN 
+            SET JSON_SENT = 1
+            WHERE JSON_KEYU = @JsonKeyU";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@JsonKeyU", jsonKeyU);
+
+                var rowsAffected = await command.ExecuteNonQueryAsync();
+
+                if (rowsAffected > 0)
+                {
+                    _logger.LogDebug($"✅ Ligne INT32 {jsonKeyU} marquée comme confirmée");
+                    return true;
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Ligne INT32 {jsonKeyU} non trouvée pour marquage");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur marquage ligne INT32 {jsonKeyU}");
+                return false;
+            }
+        }
+
+
+        /// <summary>
+        /// ✅ MODIFIÉ : Recherche un enregistrement existant par clé métier + endpoint
+        /// Pour INT32 : vérifie si le hash existe dans N'IMPORTE QUELLE version (pas seulement la dernière)
         /// </summary>
         private async Task<(int Id, string Hash)?> GetExistingRecordAsync(SqlConnection connection, string businessKey, string endpoint)
         {
-            const string sql = @"
+            // ✅ NOUVEAU : Pour les INT32, chercher le hash dans toutes les versions
+            bool isInt32 = IsInt32Endpoint(endpoint);
+
+            if (isInt32)
+            {
+                // Pour INT32 : retourner la version la plus récente pour comparaison de hash
+                const string sqlLatest = @"
                 SELECT TOP 1 JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
                 FROM JSON_IN 
                 WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint
@@ -211,40 +389,73 @@ namespace DynamicsApiToDatabase.Services
                 FROM JSON_IN 
                 WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
 
-            using var checkCommand = new SqlCommand(sqlCheck, connection);
-            checkCommand.Parameters.AddWithValue("@BusinessKey", businessKey);
-            checkCommand.Parameters.AddWithValue("@Endpoint", endpoint);
+                using var commandLatest = new SqlCommand(sqlLatest, connection);
+                commandLatest.Parameters.AddWithValue("@BusinessKey", businessKey);
+                commandLatest.Parameters.AddWithValue("@Endpoint", endpoint);
 
-            var count = (int)await checkCommand.ExecuteScalarAsync();
-            if (count > 1)
-            {
-                _logger.LogWarning($"⚠️ DOUBLON détecté : {count} occurrences pour {businessKey}");
+                using var readerLatest = await commandLatest.ExecuteReaderAsync();
+                if (await readerLatest.ReadAsync())
+                {
+                    return (readerLatest.GetInt32("JSON_KEYU"), readerLatest.GetString("JSON_HASH"));
+                }
+                return null;
             }
+            else
+            {
+                // Pour les autres endpoints : comportement normal
+                const string sql = @"
+            SELECT TOP 1 JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
+            FROM JSON_IN 
+            WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint
+            ORDER BY JSON_CRDA DESC";
 
             using var command = new SqlCommand(sql, connection);
             command.Parameters.AddWithValue("@BusinessKey", businessKey);
             command.Parameters.AddWithValue("@Endpoint", endpoint);
 
-            using var reader = await command.ExecuteReaderAsync();
-            if (await reader.ReadAsync())
-            {
-                return (reader.GetInt32("JSON_KEYU"), reader.GetString("JSON_HASH"));
+                using var reader = await command.ExecuteReaderAsync();
+                if (await reader.ReadAsync())
+                {
+                    return (reader.GetInt32("JSON_KEYU"), reader.GetString("JSON_HASH"));
+                }
+                return null;
             }
-            return null;
         }
 
         /// <summary>
-        /// Met à jour un enregistrement existant
+        /// ✅ NOUVELLE MÉTHODE : Vérifie si un hash existe déjà dans l'historique (pour INT32)
+        /// </summary>
+        private async Task<bool> HashExistsInHistoryAsync(SqlConnection connection, string businessKey, string endpoint, string hash)
+        {
+            const string sql = @"
+        SELECT COUNT(*)
+        FROM JSON_IN 
+        WHERE JSON_BKEY = @BusinessKey 
+        AND JSON_FROM = @Endpoint
+        AND JSON_HASH = @Hash";
+
+            using var command = new SqlCommand(sql, connection);
+            command.Parameters.AddWithValue("@BusinessKey", businessKey);
+            command.Parameters.AddWithValue("@Endpoint", endpoint);
+            command.Parameters.AddWithValue("@Hash", hash);
+
+            var count = (int)await command.ExecuteScalarAsync();
+            return count > 0;
+        }
+
+        /// <summary>
+        /// Met à jour un enregistrement existant (utilisé uniquement pour les endpoints non-INT32)
         /// </summary>
         private async Task<bool> UpdateExistingRecordAsync(SqlConnection connection, int id, string jsonData, string contentHash, string status)
         {
             const string sql = @"
-                UPDATE JSON_IN 
-                SET 
-                    JSON_DATA = @JsonData, 
-                    JSON_HASH = @Hash,
-                    JSON_STAT = @Status
-                WHERE JSON_KEYU = @Id";
+        UPDATE JSON_IN 
+        SET 
+            JSON_DATA = @JsonData, 
+            JSON_HASH = @Hash,
+            JSON_STAT = @Status,
+            JSON_TRDA = GETDATE()
+        WHERE JSON_KEYU = @Id";
 
             using var command = new SqlCommand(sql, connection);
             command.Parameters.AddWithValue("@JsonData", jsonData);
@@ -257,15 +468,16 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Insère un nouvel enregistrement (JSON_KEYU auto-incrémenté)
+        /// ✅ MODIFIÉ : Insère un nouvel enregistrement avec JSON_SENT = 0 par défaut
+        /// (JSON_KEYU auto-incrémenté, JSON_CRDA = date actuelle)
         /// </summary>
         private async Task<bool> InsertNewRecordAsync(SqlConnection connection, string businessKey, string jsonData, string endpoint, string contentHash, string status)
         {
             const string sql = @"
                 INSERT INTO JSON_IN 
-                (JSON_CRDA, JSON_FROM, JSON_CCLI, JSON_DATA, JSON_TRTP, JSON_TRDA, JSON_TREN, JSON_BKEY, JSON_HASH, JSON_STAT)
+                (JSON_CRDA, JSON_FROM, JSON_CCLI, JSON_DATA, JSON_TRTP, JSON_TRDA, JSON_TREN, JSON_BKEY, JSON_HASH, JSON_STAT, JSON_SENT)
                 VALUES 
-                (GETDATE(), @Endpoint, 'BR', @JsonData, 0, GETDATE(), 'SPEED', @BusinessKey, @Hash, @Status)";
+                (GETDATE(), @Endpoint, 'BR', @JsonData, 0, GETDATE(), 'SPEED', @BusinessKey, @Hash, @Status, 0)";
 
             using var command = new SqlCommand(sql, connection);
             command.Parameters.AddWithValue("@BusinessKey", businessKey);
@@ -681,6 +893,7 @@ namespace DynamicsApiToDatabase.Services
 
         /// <summary>
         /// Récupère les IDs des commandes déjà traitées (INT3PLStatus = ProcessedBy3PL)
+        /// MODIFIÉ : Pour INT32, ne filtre pas car il faut confirmer chaque version individuellement
         /// </summary>
         public async Task<List<string>> GetProcessedOrderIdsAsync(string endpointPath)
         {
@@ -688,6 +901,15 @@ namespace DynamicsApiToDatabase.Services
 
             try
             {
+                // ✅ NOUVEAU : Pour INT32, ne pas filtrer par PurchId global
+                // Car plusieurs versions peuvent coexister avec des statuts différents
+                if (IsInt32Endpoint(endpointPath))
+                {
+                    _logger.LogDebug($"🔄 [INT32] Pas de filtrage pour {endpointPath} - Toutes les versions seront traitées");
+                    return new List<string>(); // Retourner vide = tout traiter
+                }
+
+                // Logique existante pour les autres endpoints (Sales, Articles, etc.)
                 using var connection = new SqlConnection(_connectionString);
                 await connection.OpenAsync();
 
@@ -1718,6 +1940,110 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+        /// ✅ NOUVELLE MÉTHODE : Récupère le PurchTableVersion d'une Purchase Order depuis JSON_IN
+        /// </summary>
+        /// <param name="purchId">ID de la Purchase Order</param>
+        /// <returns>PurchTableVersion sous forme de string, ou string.Empty si non trouvé</returns>
+        public async Task<string> GetPurchTableVersionAsync(string purchId)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT TOP 1
+                JSON_VALUE(JSON_DATA, '$.PurchTableVersion') as PurchTableVersion
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRINT32PurchOrderTables'
+            AND JSON_VALUE(JSON_DATA, '$.PurchId') = @PurchId
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            ORDER BY JSON_CRDA DESC";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@PurchId", purchId);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                if (await reader.ReadAsync())
+                {
+                    var purchTableVersion = reader.IsDBNull("PurchTableVersion")
+                        ? string.Empty
+                        : reader.GetString("PurchTableVersion");
+
+                    if (!string.IsNullOrEmpty(purchTableVersion))
+                    {
+                        _logger.LogInformation($"✅ PurchTableVersion trouvé: {purchTableVersion} pour Purchase Order {purchId}");
+                        return purchTableVersion;
+                    }
+                    else
+                    {
+                        _logger.LogWarning($"⚠️ PurchTableVersion est NULL ou vide pour Purchase Order {purchId}");
+                        return string.Empty;
+                    }
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Aucune Purchase Order trouvée pour {purchId}");
+                    return string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération PurchTableVersion pour Purchase Order {purchId}");
+                return string.Empty;
+            }
+        }
+
+        /// <summary>
+        /// ✅ NOUVELLE MÉTHODE : Récupère TOUTES les versions d'une Purchase Order
+        /// </summary>
+        public async Task<List<string>> GetAllPurchTableVersionsAsync(string purchId)
+        {
+            var versions = new List<string>();
+
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                const string sql = @"
+            SELECT DISTINCT
+                JSON_VALUE(JSON_DATA, '$.PurchTableVersion') as PurchTableVersion
+            FROM JSON_IN 
+            WHERE JSON_FROM = 'data/BRINT32PurchOrderTables'
+            AND JSON_VALUE(JSON_DATA, '$.PurchId') = @PurchId
+            AND ISNULL(JSON_STAT, 'ACTIVE') = 'ACTIVE'
+            AND JSON_VALUE(JSON_DATA, '$.PurchTableVersion') IS NOT NULL
+            AND JSON_VALUE(JSON_DATA, '$.PurchTableVersion') <> ''
+            ORDER BY JSON_VALUE(JSON_DATA, '$.PurchTableVersion')";
+
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@PurchId", purchId);
+
+                using var reader = await command.ExecuteReaderAsync();
+
+                while (await reader.ReadAsync())
+                {
+                    var version = reader.GetString("PurchTableVersion");
+                    if (!string.IsNullOrEmpty(version))
+                    {
+                        versions.Add(version);
+                    }
+                }
+
+                _logger.LogInformation($"✅ {versions.Count} version(s) trouvée(s) pour Purchase Order {purchId}: {string.Join(", ", versions)}");
+
+                return versions;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur récupération versions Purchase Order {purchId}");
+                return versions;
+            }
+        }
+
+        /// <summary>
         /// Vérifie si un endpoint utilise la logique par date (uniquement articles pour le moment)
         /// </summary>
         public bool ShouldUseDateBasedSync(string endpoint)
@@ -1768,6 +2094,9 @@ namespace DynamicsApiToDatabase.Services
                     return $"{OrderType} {OrderId} - Line {LineNumber} - Item {ItemId} (Qty: {Quantity})";
                 }
             }
+
+
+
         }
     }
 }
