@@ -69,7 +69,7 @@ namespace DynamicsApiToDatabase.Services
                     coalesce(REL.REL_DLUO,'') as REL_DLUO,         -- ExpDate
                     REL.REL_LOT2,                      -- ItemSerialNumber
                     coalesce((
-						select rea_alpha2 from REA_DAT where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL and rea_lot1 = REL.rel_lot1
+						select rea_alpha2 from REA_DAT where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
 					),'') as REA_ALPHA2,							   -- ReferenceInventoryLotId
                     REE.REE_ETRE,                      -- Status
                     REE.ACT_CODE,                      -- ActivityCode
@@ -101,7 +101,7 @@ namespace DynamicsApiToDatabase.Services
                         where 1=1 and act_code = REE.ACT_CODE and REA_RFCE = REL.rea_rfce and ART_CODE = REL.art_code and REA_RFCL = REL.REA_RFCL
                     ) = 'Interface EUDL' --pour les tests
                     AND REE.REE_ETRE = '200' -- =seulement les réceptions cloturées
-                    AND REE.REE_NORE = 41
+                    AND REE.REE_NORE in (120)
                 ORDER BY 
                     REE.REE_DARE DESC, REE.REE_NORE";
 

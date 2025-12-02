@@ -34,7 +34,7 @@ namespace DynamicsApiToDatabase.Services
             {
                 // ✅ NOUVEAU CHEMIN pour la structure séparée
                 var exePath = _configuration["ExternalPrograms:TranslatorPath"]
-                    ?? @"C:\Users\BDEQUEKER\OneDrive\Bureau\Eurodislog 2024-2025\API_BR - exe\exe\Translator\DynamicsToXmlTranslator.exe";
+                    ?? @"D:\_Eurodislog\API_BR\DynamicsToXmlTranslator\bin\Debug\net8.0\DynamicsToXmlTranslator.exe";
 
                 var timeoutMinutes = _configuration.GetValue<int>("ExternalPrograms:TimeoutMinutes", 5);
                 var timeout = TimeSpan.FromMinutes(timeoutMinutes);

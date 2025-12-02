@@ -120,9 +120,8 @@ namespace DynamicsApiToDatabase.Services
             AND OPE_CRQI = 'INTERFACE'
             AND ACT_CODE = 'COSMETIQUE'
             AND OPE_STAT = '070'  -- Seulement les BL en préparation (statut 070)
-            -- 🧪 FILTRE TEST : Seulement OPE_ALPHA17 = PP000283
+            -- 🧪 FILTRE TEST : Seulement OPE_ALPHA17 = PP000448
             -- AND OPE_ALPHA17 in ('PP000285', 'PP000282')
-            -- AND OPE_REDO = 'OT000511' -- Filtrer par OPE_REDO spécifique
             ORDER BY OPE_KEYU";
 
                 using var command = new SqlCommand(sql, connection);
@@ -149,6 +148,7 @@ namespace DynamicsApiToDatabase.Services
                 }
 
                 _logger.LogInformation($"📋 {blHeaders.Count} BL trouvé(s) dans SpeedWMS");
+                // 🧪 NOTE: filtres de test désactivés par défaut. Pour activer, décommenter les lignes correspondantes ci-dessus.
 
                 foreach (var bl in blHeaders)
                 {
@@ -177,7 +177,7 @@ namespace DynamicsApiToDatabase.Services
                 // D'après le diagnostic, MIL_DAT n'a pas OPE_KEYU mais OPE_NoOE
                 const string sql = @"
             SELECT 
-                ISNULL(MIL.ART_CODE, '') as ART_CODE,               -- varchar(35)
+                ISNULL(SUBSTRING(MIL.ART_CODE,3,35), '') as ART_CODE,               -- varchar(35)
                 ISNULL(MIL.MIL_QTTP, 0) as MIL_QTTP,                -- decimal
                 ISNULL(MIL.MIL_QTTA, 0) as MIL_QTTA,                -- decimal  
                 ISNULL(MIL.MIL_QTMA, 0) as MIL_QTMA,                -- decimal

@@ -153,7 +153,13 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Insère ou met à jour un enregistrement dans JSON_IN
+        /// ✅ MODIFIÉ : Insère ou met à jour un enregistrement dans JSON_IN
+        /// NOUVEAU COMPORTEMENT pour INT32 (Purchase/Return/Transfer) :
+        /// - Toujours INSERT (jamais UPDATE) pour conserver l'historique
+        /// - JSON_SENT = 0 automatique pour nouvelle ligne
+        /// - Ancienne ligne garde JSON_SENT = 1 
+        /// - Identification de la version par JSON_CRDA (date création)
+        /// - INSERT uniquement si le contenu (hash) a changé
         /// </summary>
         public async Task<bool> InsertOrUpdateJsonDataAsync(string businessKey, string jsonData, string endpoint, string status = "ACTIVE")
         {
@@ -379,15 +385,10 @@ namespace DynamicsApiToDatabase.Services
             {
                 // Pour INT32 : retourner la version la plus récente pour comparaison de hash
                 const string sqlLatest = @"
-                SELECT TOP 1 JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
-                FROM JSON_IN 
-                WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint
-                ORDER BY JSON_CRDA DESC";
-
-            const string sqlCheck = @"
-                SELECT COUNT(*) as DoublonCount
-                FROM JSON_IN 
-                WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint";
+            SELECT TOP 1 JSON_KEYU, ISNULL(JSON_HASH, '') as JSON_HASH
+            FROM JSON_IN 
+            WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint
+            ORDER BY JSON_CRDA DESC";
 
                 using var commandLatest = new SqlCommand(sqlLatest, connection);
                 commandLatest.Parameters.AddWithValue("@BusinessKey", businessKey);
@@ -409,9 +410,9 @@ namespace DynamicsApiToDatabase.Services
             WHERE JSON_BKEY = @BusinessKey AND JSON_FROM = @Endpoint
             ORDER BY JSON_CRDA DESC";
 
-            using var command = new SqlCommand(sql, connection);
-            command.Parameters.AddWithValue("@BusinessKey", businessKey);
-            command.Parameters.AddWithValue("@Endpoint", endpoint);
+                using var command = new SqlCommand(sql, connection);
+                command.Parameters.AddWithValue("@BusinessKey", businessKey);
+                command.Parameters.AddWithValue("@Endpoint", endpoint);
 
                 using var reader = await command.ExecuteReaderAsync();
                 if (await reader.ReadAsync())
@@ -444,6 +445,12 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
+            var count = (int)await command.ExecuteScalarAsync();
+            return count > 0;
+        }
+
+        /// <summary>
+>>>>>>> 8a43a429fdcea50db16d00854290ff9a7720fba6
         /// Met à jour un enregistrement existant (utilisé uniquement pour les endpoints non-INT32)
         /// </summary>
         private async Task<bool> UpdateExistingRecordAsync(SqlConnection connection, int id, string jsonData, string contentHash, string status)
@@ -474,15 +481,15 @@ namespace DynamicsApiToDatabase.Services
         private async Task<bool> InsertNewRecordAsync(SqlConnection connection, string businessKey, string jsonData, string endpoint, string contentHash, string status)
         {
             const string sql = @"
-                INSERT INTO JSON_IN 
-                (JSON_CRDA, JSON_FROM, JSON_CCLI, JSON_DATA, JSON_TRTP, JSON_TRDA, JSON_TREN, JSON_BKEY, JSON_HASH, JSON_STAT, JSON_SENT)
-                VALUES 
-                (GETDATE(), @Endpoint, 'BR', @JsonData, 0, GETDATE(), 'SPEED', @BusinessKey, @Hash, @Status, 0)";
+        INSERT INTO JSON_IN 
+        (JSON_CRDA, JSON_FROM, JSON_CCLI, JSON_DATA, JSON_TRTP, JSON_TRDA, JSON_TREN, JSON_BKEY, JSON_HASH, JSON_STAT, JSON_SENT)
+        VALUES 
+        (GETDATE(), @Endpoint, 'BR', @JsonData, 0, GETDATE(), 'SPEED', @BusinessKey, @Hash, @Status, 0)";
 
             using var command = new SqlCommand(sql, connection);
-            command.Parameters.AddWithValue("@BusinessKey", businessKey);
             command.Parameters.AddWithValue("@Endpoint", endpoint);
             command.Parameters.AddWithValue("@JsonData", jsonData);
+            command.Parameters.AddWithValue("@BusinessKey", businessKey);
             command.Parameters.AddWithValue("@Hash", contentHash);
             command.Parameters.AddWithValue("@Status", status);
 

@@ -309,6 +309,7 @@ namespace DynamicsApiToDatabase.Services
                         DataAreaId = journal.DataAreaId,
                         JournalNumber = JournalNumber,
                         LineNumber = line.LineNumber,
+                        ReferenceInventoryLotId = line.ReferenceInventoryLotId,
                         ItemNumber = line.ItemNumber,
                         TransactionDate = journal.TransactionDate.ToString("yyyy-MM-ddTHH:mm:ssZ"),
                         ItemSerialNumber = line.ItemSerialNumber,
@@ -333,7 +334,7 @@ namespace DynamicsApiToDatabase.Services
                             JsonSerializer.Serialize(linePayload), "ItemArrivalLines");
                         //await _jsonOutService.LogItemArrivalJournalAsync(JournalNumber, journal.PackingSlipId,
                         //    JsonSerializer.Serialize(linePayload), "ItemArrivalLines");
-                        return true;
+                        //return true;
                     }
 
                     // Petite pause entre les lignes
