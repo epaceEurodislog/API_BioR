@@ -78,14 +78,14 @@ namespace DynamicsApiToDatabase.Services
                 if (response.IsSuccessStatusCode)
                 {
                     _logger.LogInformation($"✅ Confirmation réussie pour l'article {itemId}");
-                    await _jsonOutService.LogJsonSentAsync($"{itemId}_RESPONSE", responseContent, "RESPONSE", null, (int)response.StatusCode);
+                    await _jsonOutService.LogJsonSentAsync($"{itemId}_RESPONSE", responseContent ?? string.Empty, "RESPONSE", null, (int)response.StatusCode);
                     return true;
                 }
                 else
                 {
                     var errorMessage = $"HTTP {response.StatusCode}: {responseContent}";
                     _logger.LogError($"❌ Erreur confirmation {itemId}: {errorMessage}");
-                    await _jsonOutService.LogJsonSentAsync($"{itemId}_ERROR", responseContent, "ERROR", null, (int)response.StatusCode);
+                    await _jsonOutService.LogJsonSentAsync($"{itemId}_ERROR", responseContent ?? string.Empty, "ERROR", null, (int)response.StatusCode);
                     return false;
                 }
             }
@@ -97,77 +97,6 @@ namespace DynamicsApiToDatabase.Services
             }
         }
 
-
-        /// <summary>
-        /// ✅ MODIFIÉ : Confirme une seule ligne INT32 spécifique dans Dynamics
-        /// Purchase Orders : Utilise PurchOrderDocNum (ex: "OA24000761-2")
-        /// Return/Transfer : Utilise OrderId + LineNumber
-        /// </summary>
-        public async Task<bool> ConfirmSingleInt32LineAsync(string token, string orderId, int lineNumber, string orderType, string orderDocNum = "")
-        {
-            try
-            {
-                string endpoint;
-                bool isPurchaseOrder = orderType.ToUpper().Contains("PURCHASE");
-
-                if (isPurchaseOrder && !string.IsNullOrEmpty(orderDocNum))
-                {
-                    // ✅ Purchase Orders : Utiliser PurchOrderDocNum pour cibler la version exacte
-                    _logger.LogDebug($"🔄 [PURCHASE] Confirmation via PurchOrderDocNum: {orderDocNum}");
-                    endpoint = $"{_baseUrl}/data/BRINT32PurchOrderTables(dataAreaId='BR',PurchOrderDocNum='{orderDocNum}')";
-                }
-                else
-                {
-                    // Return/Transfer Orders : Utiliser la méthode classique avec OrderId + LineNumber
-                    _logger.LogDebug($"🔄 [{orderType}] Confirmation ligne {orderId} - Line {lineNumber}");
-
-                    endpoint = orderType.ToUpper() switch
-                    {
-                        "PURCHASEORDERS" or "BRINT32PURCHORDERTABLES" =>
-                            $"{_baseUrl}/data/BRINT32PurchOrderTables(dataAreaId='BR',PurchId='{orderId}',LineNumber={lineNumber})",
-
-                        "RETURNORDERS" or "BRINT32RETURNORDERTABLES" =>
-                            $"{_baseUrl}/data/BRINT32ReturnOrderTables(dataAreaId='BR',ReturnItemNum='{orderId}',LineNum={lineNumber})",
-
-                        "TRANSFERORDERS" or "BRINT32TRANSFERORDERTABLES" =>
-                            $"{_baseUrl}/data/BRINT32TransferOrderTables(dataAreaId='BR',TransferId='{orderId}',LineNumber={lineNumber})",
-
-                        _ => throw new ArgumentException($"Type de commande non reconnu: {orderType}")
-                    };
-                }
-
-                // Payload pour mettre à jour le statut
-                var payload = new { INT3PLStatus = "ProcessedBy3PL" };
-                var jsonPayload = JsonSerializer.Serialize(payload);
-                var content = new StringContent(jsonPayload, Encoding.UTF8, "application/json");
-
-                _httpClient.DefaultRequestHeaders.Clear();
-                _httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {token}");
-                _httpClient.DefaultRequestHeaders.Add("Accept", "application/json");
-
-                _logger.LogDebug($"📤 PATCH: {endpoint}");
-
-                // Envoyer PATCH
-                var response = await _httpClient.PatchAsync(endpoint, content);
-
-                if (response.IsSuccessStatusCode)
-                {
-                    _logger.LogInformation($"✅ Ligne confirmée: {(isPurchaseOrder && !string.IsNullOrEmpty(orderDocNum) ? orderDocNum : $"{orderId}-L{lineNumber}")}");
-                    return true;
-                }
-                else
-                {
-                    var errorContent = await response.Content.ReadAsStringAsync();
-                    _logger.LogWarning($"⚠️ Échec confirmation: {response.StatusCode} - {errorContent}");
-                    return false;
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"❌ Exception confirmation ligne");
-                return false;
-            }
-        }
 
         /// <summary>
         /// ✅ MODIFIÉ : Confirme une seule ligne INT32 spécifique dans Dynamics
@@ -1067,7 +996,7 @@ namespace DynamicsApiToDatabase.Services
                         // Conserver les autres valeurs
                         updatedObject[property.Name] = property.Value.ValueKind switch
                         {
-                            JsonValueKind.String => property.Value.GetString(),
+                            JsonValueKind.String => property.Value.GetString() ?? string.Empty,
                             JsonValueKind.Number => property.Value.GetDecimal(),
                             JsonValueKind.True => true,
                             JsonValueKind.False => false,
@@ -1326,7 +1255,7 @@ namespace DynamicsApiToDatabase.Services
                 {
                     existingObject[property.Name] = property.Value.ValueKind switch
                     {
-                        JsonValueKind.String => property.Value.GetString(),
+                        JsonValueKind.String => property.Value.GetString() ?? string.Empty,
                         JsonValueKind.Number => property.Value.GetDecimal(),
                         JsonValueKind.True => true,
                         JsonValueKind.False => false,

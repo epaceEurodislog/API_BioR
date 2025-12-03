@@ -138,7 +138,7 @@ namespace DynamicsApiToDatabase.Models
         public int LineNumber { get; set; }
 
         [JsonPropertyName("ReferenceInventoryLotId")]
-        public string ReferenceInventoryLotId { get; set; }
+        public string? ReferenceInventoryLotId { get; set; }
 
         [JsonPropertyName("ItemNumber")]
         public string ItemNumber { get; set; } = "";

@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\API_BR\\API_BR\\API_BioR\\DynamicsApiToDatabase.csproj": {}
+    "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\Eurodislog 2024-2025\\API_BR - exe\\API_BioR\\DynamicsApiToDatabase.csproj": {}
   },
   "projects": {
-    "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\API_BR\\API_BR\\API_BioR\\DynamicsApiToDatabase.csproj": {
+    "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\Eurodislog 2024-2025\\API_BR - exe\\API_BioR\\DynamicsApiToDatabase.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\API_BR\\API_BR\\API_BioR\\DynamicsApiToDatabase.csproj",
+        "projectUniqueName": "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\Eurodislog 2024-2025\\API_BR - exe\\API_BioR\\DynamicsApiToDatabase.csproj",
         "projectName": "DynamicsApiToDatabase",
-        "projectPath": "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\API_BR\\API_BR\\API_BioR\\DynamicsApiToDatabase.csproj",
+        "projectPath": "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\Eurodislog 2024-2025\\API_BR - exe\\API_BioR\\DynamicsApiToDatabase.csproj",
         "packagesPath": "C:\\Users\\BDEQUEKER\\.nuget\\packages\\",
-        "outputPath": "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\API_BR\\API_BR\\API_BioR\\obj\\",
+        "outputPath": "C:\\Users\\BDEQUEKER\\OneDrive\\Bureau\\Eurodislog 2024-2025\\API_BR - exe\\API_BioR\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
@@ -96,7 +96,7 @@
             },
             "System.Text.Json": {
               "target": "Package",
-              "version": "[8.0.4, )"
+              "version": "[8.0.5, )"
             }
           },
           "imports": [

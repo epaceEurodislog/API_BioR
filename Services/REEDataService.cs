@@ -237,7 +237,7 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// ✅ Génère un numéro de journal unique
         /// </summary>
-         private async Task<string> GenerateJournalNumberAsync(SqlConnection connection)
+         private Task<string> GenerateJournalNumberAsync(SqlConnection connection)
          {
              try
              {
@@ -245,12 +245,12 @@ namespace DynamicsApiToDatabase.Services
                  var journalLog = $"JA{datePrefix}{DateTime.Now:ddHHmmss}";
 
                  _logger.LogDebug($"📝 Numéro de journal généré: {journalLog}");
-                 return journalLog;
+                 return Task.FromResult(journalLog);
              }
              catch (Exception ex)
              {
                  _logger.LogWarning(ex, "⚠️ Erreur génération numéro journal, utilisation fallback");
-                 return $"JA{DateTime.Now:yyyyMMddHHmmss}";
+                 return Task.FromResult($"JA{DateTime.Now:yyyyMMddHHmmss}");
              }
         }
 

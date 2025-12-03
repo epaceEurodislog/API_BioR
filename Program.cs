@@ -4,60 +4,53 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-            switch (syncType.ToLower())
+using Microsoft.Extensions.Logging;
+using System.Linq;
+using System.Collections.Generic;
+using DynamicsApiToDatabase.Services;
+using DynamicsApiToDatabase.Models;
+
+namespace DynamicsApiToDatabase
+{
+    class Program
+    {
+        static async Task Main(string[] args)
+        {
+            // Vérifier si un argument a été passé pour une synchronisation spécialisée
+            if (args.Length > 0)
             {
-                case "articles":
-                    Console.WriteLine("\n🧬 === SYNCHRONISATION ARTICLES UNIQUEMENT === 🧬");
-                    await SyncEndpoint(dynamicsService, token, "Articles", "data/BRINT34ReleasedProducts", "ItemId");
-                    await LaunchTranslatorIfNeeded(serviceProvider, "articles");
-                    break;
-
-                case "purchase":
-                    Console.WriteLine("\n💰 === SYNCHRONISATION PURCHASE ORDERS UNIQUEMENT === 💰");
-                    await SyncEndpoint(dynamicsService, token, "PurchaseOrders", "data/BRINT32PurchOrderTables", "OrderDocNum");
-                    await LaunchTranslatorIfNeeded(serviceProvider, "purchase");
-                    break;
-
-                case "return":
-                    Console.WriteLine("\n↩️ === SYNCHRONISATION RETURN ORDERS UNIQUEMENT === ↩️");
-                    await SyncEndpoint(dynamicsService, token, "ReturnOrders", "data/BRINT32ReturnOrderTables", "ReturnItemNum");
-                    await LaunchTranslatorIfNeeded(serviceProvider, "return");
-                    break;
-
-                case "transfer":
-                    Console.WriteLine("\n🔄 === SYNCHRONISATION TRANSFER ORDERS UNIQUEMENT === 🔄");
-                    await SyncEndpoint(dynamicsService, token, "TransferOrders", "data/BRINT32TransferOrderTables", "TransferId");
-                    await LaunchTranslatorIfNeeded(serviceProvider, "transfer");
-                    break;
-
-                case "sales":
-                    Console.WriteLine("\n🛒 === SYNCHRONISATION SALES ORDERS (PACKING SLIPS) UNIQUEMENT === 🛒");
-                    await SyncEndpoint(dynamicsService, token, "SalesOrders", "data/BRPackingSlipInterfaces", "WMSTRansRecId");
-                    await LaunchTranslatorIfNeeded(serviceProvider, "sales");
-                    break;
-
-                case "blexport":
-                    Console.WriteLine("\n📦 === EXPORT BL SPEEDWMS UNIQUEMENT === 📦");
-                    await ProcessBLExportAsync(blExportService, token);
-                    break;
-
-                case "cr_prep":
-                    Console.WriteLine("\n🛒 === SYNCHRONISATION CONFIRMATION DE PREPARATION UNIQUEMENT === 🛒");
-                    await ProcessBLExportAsync(blExportService, token);
-                    break;
-
-                case "cr_recep":
-                    Console.WriteLine("\n🛒 === SYNCHRONISATION CONFIRMATION DE RECEPTION UNIQUEMENT === 🛒");
-                    await ProcessItemArrivalJournalsAsync(serviceProvider, token);
-                    break;
-
-                default:
-                    Console.WriteLine($"❌ Type de synchronisation non reconnu : {syncType}");
-                    Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales, blexport, cr_prep, cr_recep");
-                    Environment.Exit(1);
-                    break;
+                await ExecuteSpecializedSync(args[0]);
             }
+            else
+            {
+                await ExecuteFullSync();
+            }
+        }
 
+        /// <summary>
+        /// 🆕 NOUVELLE MÉTHODE : Traite les journaux de réception ItemArrival
+        /// </summary>
+        private static async Task ProcessItemArrivalJournalsAsync(IServiceProvider serviceProvider, string token)
+        {
+            try
+            {
+                Console.WriteLine("\n🧬 === TRAITEMENT JOURNAUX DE RÉCEPTION === 🧬");
+
+                var itemArrivalService = serviceProvider.GetService<IItemArrivalJournalService>();
+                if (itemArrivalService == null)
+                {
+                    Console.WriteLine("⚠️ Service ItemArrival non disponible");
+                    return;
+                }
+
+                // Traiter tous les journaux en attente
+                var itemArrivalReport = await itemArrivalService.ProcessAllJournalsAsync(token);
+
+                Console.WriteLine("\n📊 === RÉSULTATS JOURNAUX DE RÉCEPTION === 📊");
+
+                if (itemArrivalReport.TotalJournals > 0)
+                {
+                    Console.WriteLine($"📋 Total journaux trouvés: {itemArrivalReport.TotalJournals}");
 
                     // Statistiques détaillées
                     if (itemArrivalReport.SuccessfulJournals > 0)
@@ -104,7 +97,6 @@ using Microsoft.Extensions.DependencyInjection;
 
         /// <summary>
         /// Version finale de ProcessBLExportAsync avec diagnostic ET traitement réel
-        /// À REMPLACER dans Program.cs
         /// </summary>
         private static async Task ProcessBLExportAsync(BLExportService blExportService, string token)
         {
@@ -154,7 +146,7 @@ using Microsoft.Extensions.DependencyInjection;
         /// <summary>
         /// 🆕 NOUVELLE MÉTHODE : Affiche les résultats de l'export BL
         /// </summary>
-        private static async Task DisplayBLExportResultsAsync(BLExportStatistics statistics)
+        private static Task DisplayBLExportResultsAsync(BLExportStatistics statistics)
         {
             try
             {
@@ -163,7 +155,7 @@ using Microsoft.Extensions.DependencyInjection;
                 if (statistics.TotalBLsFound == 0)
                 {
                     Console.WriteLine("ℹ️ Aucun BL trouvé dans SpeedWMS");
-                    return;
+                    return Task.CompletedTask;
                 }
 
                 Console.WriteLine($"🔍 BL trouvés SpeedWMS: {statistics.TotalBLsFound}");
@@ -198,6 +190,7 @@ using Microsoft.Extensions.DependencyInjection;
             {
                 Console.WriteLine($"⚠️ Erreur affichage résultats BLExport: {ex.Message}");
             }
+            return Task.CompletedTask;
         }
 
         /// <summary>
@@ -263,7 +256,7 @@ using Microsoft.Extensions.DependencyInjection;
                 var authService = serviceProvider.GetService<AuthenticationService>();
 
                 // 1. Récupérer les infos de debug
-                var debugInfos = await sqlServerService.GetSalesOrderDebugInfoAsync(salesOrderId);
+                var debugInfos = await sqlServerService!.GetSalesOrderDebugInfoAsync(salesOrderId);
 
                 Console.WriteLine($"📊 {debugInfos.Count} lignes trouvées dans JSON_IN:");
                 foreach (var info in debugInfos)
@@ -278,7 +271,7 @@ using Microsoft.Extensions.DependencyInjection;
                 }
 
                 // 2. Tester la confirmation
-                var token = await authService.GetAccessTokenAsync();
+                var token = await authService!.GetAccessTokenAsync();
                 if (string.IsNullOrEmpty(token))
                 {
                     Console.WriteLine("❌ Impossible d'obtenir le token d'authentification");
@@ -286,7 +279,7 @@ using Microsoft.Extensions.DependencyInjection;
                 }
 
                 Console.WriteLine($"\n🧪 Test de confirmation Sales Order {salesOrderId}...");
-                var confirmResult = await statusConfirmationService.ConfirmSalesOrderWithStatusUpdateAsync(token, salesOrderId, "ProcessedBy3PL");
+                var confirmResult = await statusConfirmationService!.ConfirmSalesOrderWithStatusUpdateAsync(token, salesOrderId, "ProcessedBy3PL");
 
                 var resultIcon = confirmResult ? "✅" : "❌";
                 Console.WriteLine($"{resultIcon} Résultat confirmation: {(confirmResult ? "SUCCÈS" : "ÉCHEC")}");
@@ -307,9 +300,6 @@ using Microsoft.Extensions.DependencyInjection;
                 Console.WriteLine($"❌ Erreur debug Sales Order {salesOrderId}: {ex.Message}");
             }
         }
-
-        // USAGE: Ajoutez cet appel dans la méthode Main pour tester
-        // await DebugSpecificSalesOrderAsync(serviceProvider, "SO000992");
 
         /// <summary>
         /// Essaye de confirmer des commandes spécifiques pour diagnostic
@@ -351,8 +341,7 @@ using Microsoft.Extensions.DependencyInjection;
         private static IServiceCollection ConfigureServices()
         {
             var configuration = new ConfigurationBuilder()
-                //.SetBasePath(Directory.GetCurrentDirectory())
-                .SetBasePath("D:/_Eurodislog/API_BR/API_BioR")
+                .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
                 .Build();
 
@@ -391,7 +380,6 @@ using Microsoft.Extensions.DependencyInjection;
             services.AddSingleton<SpeedWmsDataService>(); // Service pour SpeedWMS
             services.AddSingleton<BLExportService>(); // Service d'export BL
 
-
             return services;
         }
 
@@ -420,17 +408,19 @@ using Microsoft.Extensions.DependencyInjection;
                 Console.WriteLine($"❌ Erreur validation services: {ex.Message}");
             }
         }
-        private static async Task DisplayConfigurationAsync(ServiceProvider serviceProvider)
+
+        private static Task DisplayConfigurationAsync(ServiceProvider serviceProvider)
         {
             var configuration = serviceProvider.GetService<IConfiguration>();
 
             Console.WriteLine("📋 === CONFIGURATION === 📋");
-            Console.WriteLine($"🏢 Tenant ID: {MaskSensitiveData(configuration["TenantId"])}");
+            Console.WriteLine($"🏢 Tenant ID: {MaskSensitiveData(configuration!["TenantId"])}");
             Console.WriteLine($"🔑 Client ID: {MaskSensitiveData(configuration["ClientId"])}");
             Console.WriteLine($"🌐 Resource URL: {configuration["ResourceUrl"]}");
-            Console.WriteLine($"🗄️ Base de données: {ExtractServerFromConnectionString(configuration.GetConnectionString("DefaultConnection"))}");
+            Console.WriteLine($"🗄️ Base de données: {ExtractServerFromConnectionString(configuration!.GetConnectionString("DefaultConnection"))}");
             Console.WriteLine($"📅 Date/Heure: {DateTime.Now:dd/MM/yyyy HH:mm:ss}");
             Console.WriteLine();
+            return Task.CompletedTask;
         }
 
         private static async Task DisplayPreSyncStatisticsAsync(SqlServerDatabaseService sqlServerService, ServiceProvider serviceProvider)
@@ -528,7 +518,6 @@ using Microsoft.Extensions.DependencyInjection;
             return data[..4] + "***" + data[^4..];
         }
 
-        // ✅ UNE SEULE VERSION de la méthode ExtractServerFromConnectionString
         private static string ExtractServerFromConnectionString(string? connectionString)
         {
             if (string.IsNullOrEmpty(connectionString))
@@ -547,7 +536,7 @@ using Microsoft.Extensions.DependencyInjection;
         }
 
         /// <summary>
-        /// Exécute une synchronisation spécialisée selon l'argument - CORRIGÉ
+        /// Exécute une synchronisation spécialisée selon l'argument
         /// </summary>
         private static async Task ExecuteSpecializedSync(string syncType)
         {
@@ -570,7 +559,7 @@ using Microsoft.Extensions.DependencyInjection;
 
             var dynamicsService = serviceProvider.GetRequiredService<DynamicsDataService>();
 
-            // ✅ CORRECTION : Synchroniser selon le type demandé avec les bons endpoints
+            // Synchroniser selon le type demandé avec les bons endpoints
             switch (syncType.ToLower())
             {
                 case "articles":
@@ -581,9 +570,28 @@ using Microsoft.Extensions.DependencyInjection;
 
                 case "purchase":
                     Console.WriteLine("\n💰 === SYNCHRONISATION PURCHASE ORDERS UNIQUEMENT === 💰");
-                    //await SyncEndpoint(dynamicsService, token, "PurchaseOrders", "data/BRINT32PurchOrderTables", "PurchId");
                     await SyncEndpoint(dynamicsService, token, "PurchaseOrders", "data/BRINT32PurchOrderTables", "OrderDocNum");
                     await LaunchTranslatorIfNeeded(serviceProvider, "purchase");
+                    break;
+
+                case "return":
+                    Console.WriteLine("\n↩️ === SYNCHRONISATION RETURN ORDERS UNIQUEMENT === ↩️");
+                    await SyncEndpoint(dynamicsService, token, "ReturnOrders", "data/BRINT32ReturnOrderTables", "ReturnItemNum");
+                    await LaunchTranslatorIfNeeded(serviceProvider, "return");
+                    break;
+
+                case "transfer":
+                    Console.WriteLine("\n🔄 === SYNCHRONISATION TRANSFER ORDERS UNIQUEMENT === 🔄");
+                    await SyncEndpoint(dynamicsService, token, "TransferOrders", "data/BRINT32TransferOrderTables", "TransferId");
+                    await LaunchTranslatorIfNeeded(serviceProvider, "transfer");
+                    break;
+
+                case "sales":
+                    Console.WriteLine("\n🛒 === SYNCHRONISATION SALES ORDERS (PACKING SLIPS) UNIQUEMENT === 🛒");
+                    await SyncEndpoint(dynamicsService, token, "SalesOrders", "data/BRPackingSlipInterfaces", "WMSTRansRecId");
+                    await LaunchTranslatorIfNeeded(serviceProvider, "sales");
+                    break;
+
                 case "blexport":
                     Console.WriteLine("\n📦 === EXPORT BL SPEEDWMS UNIQUEMENT === 📦");
                     await ProcessBLExportAsync(blExportService, token);
@@ -602,13 +610,6 @@ using Microsoft.Extensions.DependencyInjection;
                 default:
                     Console.WriteLine($"❌ Type de synchronisation non reconnu : {syncType}");
                     Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales, blexport, cr_prep, cr_recep");
-                    Environment.Exit(1);
-                    break;
-
-                default:
-                    Console.WriteLine($"❌ Type de synchronisation non reconnu : {syncType}");
-                    Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales, cr_prep, cr_recep");
->>>>>>> 8a43a429fdcea50db16d00854290ff9a7720fba6
                     Environment.Exit(1);
                     break;
             }
@@ -637,7 +638,7 @@ using Microsoft.Extensions.DependencyInjection;
         }
 
         /// <summary>
-        /// Lance le translator avec le type spécifique - CORRIGÉ pour le bon mapping
+        /// Lance le translator avec le type spécifique
         /// </summary>
         private static async Task LaunchTranslatorIfNeeded(IServiceProvider serviceProvider, string syncType = "")
         {
@@ -646,7 +647,6 @@ using Microsoft.Extensions.DependencyInjection;
 
             if (externalLauncher?.IsTranslatorAvailable() == true)
             {
-                // ✅ CORRECTION : Mapper les types de sync vers les arguments Translator corrects
                 string translatorArg = MapSyncTypeToTranslatorArg(syncType);
 
                 if (!string.IsNullOrEmpty(translatorArg))
@@ -673,25 +673,25 @@ using Microsoft.Extensions.DependencyInjection;
         }
 
         /// <summary>
-        /// ✅ NOUVELLE MÉTHODE : Mappe les types de synchronisation vers les arguments Translator
+        /// Mappe les types de synchronisation vers les arguments Translator
         /// </summary>
         private static string MapSyncTypeToTranslatorArg(string syncType)
         {
             return syncType.ToLower() switch
             {
-                "articles" => "articles",          // ✅ Articles -> articles
-                "purchase" => "purchase",          // ✅ Purchase Orders -> purchase
-                "return" => "return",              // ✅ Return Orders -> return
-                "transfer" => "transfer",          // ✅ Transfer Orders -> transfer
-                "sales" => "sales",                // ✅ Sales Orders (PackingSlips) -> sales
-                "cr_prep" => "cr_prep",            // ✅ Confirmation de préparation -> cr_prep
-                "cr_recep" => "cr_recep",          // ✅ Confirmation de réception -> cr_recep
-                _ => ""                            // Mode complet si type non reconnu
+                "articles" => "articles",
+                "purchase" => "purchase",
+                "return" => "return",
+                "transfer" => "transfer",
+                "sales" => "sales",
+                "cr_prep" => "cr_prep",
+                "cr_recep" => "cr_recep",
+                _ => ""
             };
         }
 
         /// <summary>
-        /// Exécute la synchronisation complète (votre code original)
+        /// Exécute la synchronisation complète
         /// </summary>
         private static async Task ExecuteFullSync()
         {
@@ -712,7 +712,7 @@ using Microsoft.Extensions.DependencyInjection;
                 await DisplayConfigurationAsync(serviceProvider);
 
                 var sqlServerService = serviceProvider.GetService<SqlServerDatabaseService>();
-                if (!await sqlServerService.InitializeDatabaseAsync())
+                if (!await sqlServerService!.InitializeDatabaseAsync())
                 {
                     Console.WriteLine("❌ Impossible d'initialiser la base de données SQL Server");
                     Console.WriteLine("Vérifiez la connexion vers 7.2.160.173");
@@ -727,13 +727,13 @@ using Microsoft.Extensions.DependencyInjection;
 
                 // 🆕 NOUVEAU: Vérifier/créer la colonne JSON_IMPORT_ID pour BLExport
                 var jsonOutService = serviceProvider.GetService<JsonOutService>();
-                if (!await jsonOutService.EnsureImportIdColumnExistsAsync())
+                if (!await jsonOutService!.EnsureImportIdColumnExistsAsync())
                 {
                     Console.WriteLine("⚠️ Problème avec la colonne JSON_IMPORT_ID, mais on continue...");
                 }
 
                 var authService = serviceProvider.GetService<AuthenticationService>();
-                if (!authService.ValidateConfiguration())
+                if (!authService!.ValidateConfiguration())
                 {
                     Console.WriteLine("❌ Configuration Azure AD invalide");
                     Console.WriteLine("Vérifiez TenantId, ClientId et ClientSecret dans appsettings.json");
@@ -751,40 +751,35 @@ using Microsoft.Extensions.DependencyInjection;
 
                 var dataService = serviceProvider.GetService<DynamicsDataService>();
                 var statusConfirmationService = serviceProvider.GetService<StatusConfirmationService>();
-                var blExportService = serviceProvider.GetService<BLExportService>(); // 🆕 NOUVEAU
+                var blExportService = serviceProvider.GetService<BLExportService>();
 
                 await DisplayPreSyncStatisticsAsync(sqlServerService, serviceProvider);
 
                 Console.WriteLine("🚀 === DÉBUT SYNCHRONISATION AVEC CONFIRMATIONS === 🚀\n");
 
-                // ✅ EXISTANT: Synchronisation avec confirmations automatiques
-                var syncResults = await dataService.SyncAllEndpointsWithOrderConfirmationsAsync();
+                // Synchronisation avec confirmations automatiques
+                var syncResults = await dataService!.SyncAllEndpointsWithOrderConfirmationsAsync();
 
                 Console.WriteLine("\n📊 === RÉSULTATS DE SYNCHRONISATION === 📊");
                 await DisplaySyncResultsAsync(syncResults, sqlServerService);
 
-                // ✅ EXISTANT: Confirmation additionnelle des commandes en attente
+                // Confirmation additionnelle des commandes en attente
                 Console.WriteLine("\n🔄 === CONFIRMATION COMMANDES EN ATTENTE === 🔄");
-                await ConfirmPendingOrdersAsync(dataService, statusConfirmationService, token);
+                await ConfirmPendingOrdersAsync(dataService!, statusConfirmationService!, token);
 
-
-                globalStopwatch.Stop();
-                Console.WriteLine($"\n⏱️ Durée totale: {globalStopwatch.Elapsed.TotalMinutes:F1} minutes");
-                Console.WriteLine("✅ === SYNCHRONISATION AVEC CONFIRMATIONS ET BLEXPORT TERMINÉE === ✅");
-
-                // 🆕 NOUVEAU: Export BL depuis SpeedWMS
+                // Export BL depuis SpeedWMS
                 Console.WriteLine("\n📦 === EXPORT BL SPEEDWMS === 📦");
-                await ProcessBLExportAsync(blExportService, token);
+                await ProcessBLExportAsync(blExportService!, token);
 
-                // 🆕 NOUVEAU: TRAITEMENT JOURNAUX DE RÉCEPTION
+                // TRAITEMENT JOURNAUX DE RÉCEPTION
                 Console.WriteLine("\n🧬 === TRAITEMENT JOURNAUX DE RÉCEPTION === 🧬");
                 await ProcessItemArrivalJournalsAsync(serviceProvider, token);
 
-                // 🚀 EXISTANT: LANCEMENT DU PROGRAMME EXTERNE
+                // LANCEMENT DU PROGRAMME EXTERNE
                 Console.WriteLine("\n🔄 === LANCEMENT DU TRANSLATOR === 🔄");
                 var externalLauncher = serviceProvider.GetService<ExternalProgramLauncher>();
 
-                if (externalLauncher.IsTranslatorAvailable())
+                if (externalLauncher!.IsTranslatorAvailable())
                 {
                     var translatorSuccess = await externalLauncher.LaunchTranslatorAsync();
 
@@ -801,6 +796,10 @@ using Microsoft.Extensions.DependencyInjection;
                 {
                     Console.WriteLine("⚠️ DynamicsToXmlTranslator non disponible, synchronisation terminée sans traduction");
                 }
+
+                globalStopwatch.Stop();
+                Console.WriteLine($"\n⏱️ Durée totale: {globalStopwatch.Elapsed.TotalMinutes:F1} minutes");
+                Console.WriteLine("✅ === SYNCHRONISATION AVEC CONFIRMATIONS ET BLEXPORT TERMINÉE === ✅");
 
                 Console.WriteLine("\n🎯 === PROCESSUS COMPLET TERMINÉ === 🎯");
             }

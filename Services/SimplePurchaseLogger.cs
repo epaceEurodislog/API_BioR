@@ -74,7 +74,7 @@ namespace DynamicsApiToDatabase.Services
             string purchTableVersion,
             string endpoint,
             bool success,
-            string errorMessage = null)
+            string? errorMessage = null)
         {
             try
             {
@@ -115,7 +115,7 @@ namespace DynamicsApiToDatabase.Services
             string purchTableVersion,
             string payloadJson,
             bool success,
-            string responseContent = null)
+            string? responseContent = null)
         {
             try
             {

@@ -34,7 +34,7 @@ namespace DynamicsApiToDatabase.Services
             _httpClient = httpClient;
 
             // 🔧 Récupération de l'URL de base depuis la configuration (même clé que AuthenticationService)
-            _baseUrl = _configuration["Resource"];
+            _baseUrl = _configuration["Resource"] ?? throw new InvalidOperationException("Resource URL is not configured");
 
             // Debug pour vérifier l'URL
             Console.WriteLine($"🔧 StatusUpdateService - URL de base : {_baseUrl}");
@@ -253,8 +253,8 @@ namespace DynamicsApiToDatabase.Services
     /// </summary>
     public class ArticleStatusUpdate
     {
-        public string ItemId { get; set; }
-        public string NewStatus { get; set; }
-        public string ETag { get; set; }
+        public string ItemId { get; set; } = string.Empty;
+        public string NewStatus { get; set; } = string.Empty;
+        public string ETag { get; set; } = string.Empty;
     }
 }

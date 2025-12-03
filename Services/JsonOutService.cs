@@ -64,7 +64,7 @@ namespace DynamicsApiToDatabase.Services
                     AND COLUMN_NAME = 'JSON_IMPORT_ID'";
 
                 using var checkCommand = new SqlCommand(checkColumnSql, connection);
-                var columnExists = (int)await checkCommand.ExecuteScalarAsync() > 0;
+                var columnExists = (int?)await checkCommand.ExecuteScalarAsync() > 0;
 
                 if (!columnExists)
                 {
@@ -383,7 +383,7 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// ✅ Méthodes génériques pour compatibilité avec le code existant
         /// </summary>
-        public async Task LogJsonSentAsync(string itemId, string jsonPayload, string endpoint, string responseContent = null, int httpCode = 0, string importId = null, string status = null)
+        public async Task LogJsonSentAsync(string itemId, string jsonPayload, string endpoint, string? responseContent = null, int httpCode = 0, string? importId = null, string? status = null)
         {
             try
             {

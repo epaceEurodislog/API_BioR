@@ -53,7 +53,7 @@ namespace DynamicsApiToDatabase.Services
                 RetryDelaySeconds = configuration.GetValue<int>("BLExport:RetryDelaySeconds", 30),
                 BatchSize = configuration.GetValue<int>("BLExport:BatchSize", 10),
                 EnableConfirmationPost = configuration.GetValue<bool>("BLExport:EnableConfirmationPost", true),
-                DefaultInventLocationId = configuration.GetValue<string>("BLExport:DefaultInventLocationId", "RECNOLP")
+                DefaultInventLocationId = configuration.GetValue<string>("BLExport:DefaultInventLocationId") ?? "RECNOLP"
             };
         }
 
@@ -516,7 +516,7 @@ namespace DynamicsApiToDatabase.Services
                 if (response.IsSuccessStatusCode)
                 {
                     _logger.LogDebug($"✅ Payload envoyé: BL {blNumber}, Item {payload.ItemId}");
-                    await _jsonOutService.LogJsonSentAsync($"BL_DATA_RESP_{blNumber}_{payload.ItemId}", responseContent, "RESPONSE", null, (int)response.StatusCode);
+                    await _jsonOutService.LogJsonSentAsync($"BL_DATA_RESP_{blNumber}_{payload.ItemId}", responseContent ?? string.Empty, "RESPONSE", null, (int)response.StatusCode);
                     return true;
                 }
                 else

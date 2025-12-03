@@ -32,9 +32,7 @@ namespace DynamicsApiToDatabase.Services
         {
             try
             {
-                // ✅ NOUVEAU CHEMIN pour la structure séparée
-                var exePath = _configuration["ExternalPrograms:TranslatorPath"]
-                    ?? @"D:\_Eurodislog\API_BR\DynamicsToXmlTranslator\bin\Debug\net8.0\DynamicsToXmlTranslator.exe";
+                var exePath = GetTranslatorPath();
 
                 var timeoutMinutes = _configuration.GetValue<int>("ExternalPrograms:TimeoutMinutes", 5);
                 var timeout = TimeSpan.FromMinutes(timeoutMinutes);
@@ -183,9 +181,7 @@ namespace DynamicsApiToDatabase.Services
         {
             try
             {
-                // ✅ NOUVEAU CHEMIN pour la structure séparée
-                var exePath = _configuration["ExternalPrograms:TranslatorPath"]
-                    ?? @"C:\Users\BDEQUEKER\OneDrive\Bureau\Eurodislog 2024-2025\API_BR - exe\exe\Translator\DynamicsToXmlTranslator.exe";
+                var exePath = GetTranslatorPath();
 
                 bool exists = File.Exists(exePath);
 
@@ -214,9 +210,7 @@ namespace DynamicsApiToDatabase.Services
         {
             try
             {
-                // ✅ NOUVEAU CHEMIN pour la structure séparée
-                var exePath = _configuration["ExternalPrograms:TranslatorPath"]
-                    ?? @"C:\Users\BDEQUEKER\OneDrive\Bureau\Eurodislog 2024-2025\API_BR - exe\exe\Translator\DynamicsToXmlTranslator.exe";
+                var exePath = GetTranslatorPath();
 
                 var timeoutMinutes = _configuration.GetValue<int>("ExternalPrograms:TimeoutMinutes", 5);
                 var timeout = TimeSpan.FromMinutes(timeoutMinutes);
@@ -310,6 +304,49 @@ namespace DynamicsApiToDatabase.Services
         {
             _logger.LogInformation($"📋 Lancement du Translator en mode filtré : {filterType}");
             return await LaunchTranslatorWithArgsAsync(filterType);
+        }
+
+        /// <summary>
+        /// Obtient le chemin du Translator avec détection automatique intelligente
+        /// </summary>
+        private string GetTranslatorPath()
+        {
+            // 1. Vérifier dans la configuration
+            var configPath = _configuration["ExternalPrograms:TranslatorPath"];
+            if (!string.IsNullOrWhiteSpace(configPath) && File.Exists(configPath))
+            {
+                _logger.LogInformation($"📂 Utilisation du chemin configuré: {configPath}");
+                return configPath;
+            }
+
+            // 2. Chercher dans les emplacements standard relatifs au répertoire courant
+            var baseDir = Directory.GetCurrentDirectory();
+            var possiblePaths = new[]
+            {
+                // Relatif au projet actuel
+                Path.Combine(baseDir, "..", "exe", "Translator", "DynamicsToXmlTranslator.exe"),
+                Path.Combine(baseDir, "..", "..", "exe", "Translator", "DynamicsToXmlTranslator.exe"),
+                // Dans le même répertoire
+                Path.Combine(baseDir, "DynamicsToXmlTranslator.exe"),
+                // Sous-dossier Translator
+                Path.Combine(baseDir, "Translator", "DynamicsToXmlTranslator.exe")
+            };
+
+            foreach (var path in possiblePaths)
+            {
+                var normalizedPath = Path.GetFullPath(path);
+                if (File.Exists(normalizedPath))
+                {
+                    _logger.LogInformation($"✅ Translator trouvé automatiquement: {normalizedPath}");
+                    return normalizedPath;
+                }
+            }
+
+            // 3. Si toujours pas trouvé, retourner un chemin par défaut et logger l'erreur
+            var defaultPath = Path.Combine(baseDir, "DynamicsToXmlTranslator.exe");
+            _logger.LogWarning($"⚠️ Translator non trouvé. Chemin par défaut utilisé: {defaultPath}");
+            _logger.LogWarning("💡 Configurez 'ExternalPrograms:TranslatorPath' dans appsettings.json pour éviter ce message");
+            return defaultPath;
         }
     }
 }

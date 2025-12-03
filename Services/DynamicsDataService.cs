@@ -879,33 +879,6 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// ✅ NOUVELLE MÉTHODE : Retire les suffixes de version (-2, -3, -4, etc.)
-        /// Exemples:
-        /// - "OA24000526-2" → "OA24000526"
-        /// - "OA24000526-12" → "OA24000526"
-        /// - "OA24000526" → "OA24000526" (inchangé si pas de suffixe)
-        /// </summary>
-        private string RemoveVersionSuffix(string? value)
-        {
-            if (string.IsNullOrEmpty(value))
-                return string.Empty;
-
-            // Pattern: retire tout ce qui suit un tiret suivi de chiffres à la fin
-            // Exemple: "OA24000526-2" → "OA24000526"
-            var match = System.Text.RegularExpressions.Regex.Match(value, @"^(.+?)-\d+$");
-
-            if (match.Success)
-            {
-                var cleanValue = match.Groups[1].Value;
-                _logger.LogDebug($"🧹 Nettoyage version: '{value}' → '{cleanValue}'");
-                return cleanValue;
-            }
-
-            // Pas de suffixe détecté, retourner la valeur d'origine
-            return value;
-        }
-
-        /// <summary>
         /// Filtre les éléments déjà traités selon le type d'endpoint
         /// </summary>
         private async Task<List<JsonElement>> FilterAlreadyProcessedItemsAsync(List<JsonElement> apiData, string endpointName, string endpointPath)

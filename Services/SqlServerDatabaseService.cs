@@ -86,7 +86,7 @@ namespace DynamicsApiToDatabase.Services
                     AND COLUMN_NAME = 'JSON_SENT'";
 
                 using var checkCommand = new SqlCommand(checkColumnSql, connection);
-                var columnExists = (int)await checkCommand.ExecuteScalarAsync() > 0;
+                var columnExists = (int?)await checkCommand.ExecuteScalarAsync() > 0;
 
                 if (!columnExists)
                 {
@@ -103,7 +103,7 @@ namespace DynamicsApiToDatabase.Services
 
                     // ✅ VÉRIFICATION POST-CRÉATION
                     using var verifyCommand = new SqlCommand(checkColumnSql, connection);
-                    var verified = (int)await verifyCommand.ExecuteScalarAsync() > 0;
+                    var verified = (int?)await verifyCommand.ExecuteScalarAsync() > 0;
 
                     if (!verified)
                     {
@@ -148,7 +148,7 @@ namespace DynamicsApiToDatabase.Services
             const string sql = "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @TableName";
             using var command = new SqlCommand(sql, connection);
             command.Parameters.AddWithValue("@TableName", tableName);
-            var count = (int)await command.ExecuteScalarAsync();
+            var count = (int?)await command.ExecuteScalarAsync();
             return count > 0;
         }
 
@@ -440,17 +440,11 @@ namespace DynamicsApiToDatabase.Services
             command.Parameters.AddWithValue("@Endpoint", endpoint);
             command.Parameters.AddWithValue("@Hash", hash);
 
-            var count = (int)await command.ExecuteScalarAsync();
+            var count = (int?)await command.ExecuteScalarAsync();
             return count > 0;
         }
 
         /// <summary>
-            var count = (int)await command.ExecuteScalarAsync();
-            return count > 0;
-        }
-
-        /// <summary>
->>>>>>> 8a43a429fdcea50db16d00854290ff9a7720fba6
         /// Met à jour un enregistrement existant (utilisé uniquement pour les endpoints non-INT32)
         /// </summary>
         private async Task<bool> UpdateExistingRecordAsync(SqlConnection connection, int id, string jsonData, string contentHash, string status)
@@ -1717,7 +1711,7 @@ namespace DynamicsApiToDatabase.Services
             AND COLUMN_NAME = 'JSON_MODIFIED_DATE'";
 
                 using var checkCommand = new SqlCommand(checkColumnSql, connection);
-                var columnExists = (int)await checkCommand.ExecuteScalarAsync() > 0;
+                var columnExists = (int?)await checkCommand.ExecuteScalarAsync() > 0;
 
                 if (!columnExists)
                 {
@@ -1880,8 +1874,8 @@ namespace DynamicsApiToDatabase.Services
                 {
                     stats["TotalArticles"] = reader.GetInt32("TotalArticles");
                     stats["ArticlesWithModDate"] = reader.GetInt32("ArticlesWithModDate");
-                    stats["LastModificationDate"] = reader.IsDBNull("LastModificationDate") ? null : reader.GetDateTime("LastModificationDate");
-                    stats["FirstModificationDate"] = reader.IsDBNull("FirstModificationDate") ? null : reader.GetDateTime("FirstModificationDate");
+                    stats["LastModificationDate"] = reader.IsDBNull("LastModificationDate") ? (object?)null : reader.GetDateTime("LastModificationDate");
+                    stats["FirstModificationDate"] = reader.IsDBNull("FirstModificationDate") ? (object?)null : reader.GetDateTime("FirstModificationDate");
                     stats["ModifiedLast24h"] = reader.GetInt32("ModifiedLast24h");
                     stats["ModifiedLast7Days"] = reader.GetInt32("ModifiedLast7Days");
                 }

@@ -534,7 +534,7 @@ namespace DynamicsApiToDatabase.Services
 
                 using var tableExistsCommand = new SqlCommand(tableExistsSql, connection);
                 tableExistsCommand.Parameters.AddWithValue("@TableName", tableName);
-                var tableExists = (int)await tableExistsCommand.ExecuteScalarAsync() > 0;
+                var tableExists = (int?)await tableExistsCommand.ExecuteScalarAsync() > 0;
 
                 if (!tableExists)
                 {
@@ -583,7 +583,7 @@ namespace DynamicsApiToDatabase.Services
                 {
                     var testSql = $"SELECT COUNT(*) FROM {tableName}";
                     using var testCommand = new SqlCommand(testSql, connection);
-                    var rowCount = (int)await testCommand.ExecuteScalarAsync();
+                    var rowCount = (int?)await testCommand.ExecuteScalarAsync();
                     tableReport += $"   📦 Contient: {rowCount:N0} enregistrements\n";
                 }
                 catch (Exception ex)
@@ -733,7 +733,7 @@ namespace DynamicsApiToDatabase.Services
             // RG5: Date fin préparation = Max des MIE_MODA des lignes
             var maxEndDatePrep = speedBL.Lines
                 .Where(l => l.MaxMieModa.HasValue)
-                .Select(l => l.MaxMieModa.Value)
+                .Select(l => l.MaxMieModa!.Value)
                 .DefaultIfEmpty()
                 .Max();
 
@@ -767,7 +767,7 @@ namespace DynamicsApiToDatabase.Services
         /// <summary>
         /// Transforme et regroupe les lignes d'articles
         /// </summary>
-        private async Task<List<BLExportLine>> TransformBLLinesAsync(List<SpeedWmsBLLine> speedLines)
+        private Task<List<BLExportLine>> TransformBLLinesAsync(List<SpeedWmsBLLine> speedLines)
         {
             var exportLines = new List<BLExportLine>();
 
@@ -795,7 +795,7 @@ namespace DynamicsApiToDatabase.Services
                                      .Distinct()
                                      .ToList(),
                     MinDluo = group.Where(l => l.DluoMin.HasValue)
-                                  .Select(l => l.DluoMin.Value)
+                                  .Select(l => l.DluoMin!.Value)
                                   .DefaultIfEmpty()
                                   .Min()
                 };
@@ -809,7 +809,7 @@ namespace DynamicsApiToDatabase.Services
                 exportLines.Add(exportLine);
             }
 
-            return exportLines;
+            return Task.FromResult(exportLines);
         }
 
         /// <summary>
@@ -912,7 +912,7 @@ namespace DynamicsApiToDatabase.Services
                 // Test simple avec comptage des BL
                 const string testSql = "SELECT COUNT(*) FROM OPE_DAT";
                 using var command = new SqlCommand(testSql, connection);
-                var count = (int)await command.ExecuteScalarAsync();
+                var count = (int?)await command.ExecuteScalarAsync();
 
                 _logger.LogInformation($"✅ Connexion SpeedWMS OK - {count} enregistrements dans OPE_DAT");
                 return true;
@@ -1213,7 +1213,7 @@ namespace DynamicsApiToDatabase.Services
                 {
                     const string countSql = "SELECT COUNT(*) FROM OPE_DAT";
                     using var countCommand = new SqlCommand(countSql, connection);
-                    var count = (int)await countCommand.ExecuteScalarAsync();
+                    var count = (int?)await countCommand.ExecuteScalarAsync();
                     report += $"✅ Total BL dans OPE_DAT: {count}\n";
                 }
                 catch (Exception ex)
