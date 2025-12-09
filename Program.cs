@@ -9,6 +9,9 @@ using System.Linq;
 using System.Collections.Generic;
 using DynamicsApiToDatabase.Services;
 using DynamicsApiToDatabase.Models;
+using DynamicsApiToDatabase.Services.INT48;
+using DynamicsApiToDatabase.DataAccess.INT48;
+using DynamicsApiToDatabase.Models.INT48;
 
 namespace DynamicsApiToDatabase
 {
@@ -380,6 +383,12 @@ namespace DynamicsApiToDatabase
             services.AddSingleton<SpeedWmsDataService>(); // Service pour SpeedWMS
             services.AddSingleton<BLExportService>(); // Service d'export BL
 
+            // ✅ SERVICES INT48
+            services.AddSingleton<DynamicsAuthService>();
+            services.AddSingleton<InventoryTransformationService>();
+            services.AddSingleton<InventoryAdjustmentService>();
+            services.AddSingleton<SpeedWmsInventoryRepository>();
+
             return services;
         }
 
@@ -607,6 +616,13 @@ namespace DynamicsApiToDatabase
                     await ProcessItemArrivalJournalsAsync(serviceProvider, token);
                     break;
 
+                case "int48":
+                case "inventory":
+                case "adjustments":
+                    Console.WriteLine("\n📦 === SYNCHRONISATION AJUSTEMENTS D'INVENTAIRE (INT48) === 📦");
+                    await ProcessInventoryAdjustmentsAsync(serviceProvider);
+                break;
+
                 default:
                     Console.WriteLine($"❌ Type de synchronisation non reconnu : {syncType}");
                     Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales, blexport, cr_prep, cr_recep");
@@ -689,6 +705,89 @@ namespace DynamicsApiToDatabase
                 _ => ""
             };
         }
+
+        private static async Task ProcessInventoryAdjustmentsAsync(IServiceProvider serviceProvider)
+{
+    try
+    {
+        var repository = serviceProvider.GetRequiredService<SpeedWmsInventoryRepository>();
+        var adjustmentService = serviceProvider.GetRequiredService<InventoryAdjustmentService>();
+
+        Console.WriteLine("🔍 Vérification connectivité Dynamics Inventory Service...");
+        
+        var connectivityOk = await adjustmentService.TestDynamicsConnectivityAsync();
+        if (!connectivityOk)
+        {
+            Console.WriteLine("❌ Connectivité Inventory Service KO, traitement annulé");
+            return;
+        }
+
+        Console.WriteLine("✅ Connectivité Inventory Service OK");
+
+        // Étape 1: Récupérer les mouvements depuis SpeedWMS
+        Console.WriteLine("\n📥 Récupération des mouvements d'inventaire depuis SpeedWMS...");
+        var movements = await repository.GetPendingInventoryMovementsAsync();
+
+        if (movements.Count == 0)
+        {
+            Console.WriteLine("📭 Aucun mouvement d'inventaire à traiter");
+            return;
+        }
+
+        Console.WriteLine($"📦 {movements.Count} mouvements d'inventaire trouvés");
+
+        // Étape 2: Traiter et envoyer vers Dynamics 365
+        Console.WriteLine("\n🚀 Envoi des ajustements vers Dynamics 365...");
+        var stats = await adjustmentService.ProcessInventoryAdjustmentsAsync(movements);
+
+        // Étape 3: Afficher les résultats
+        Console.WriteLine("\n📊 === RÉSULTATS INT48 === 📊");
+        Console.WriteLine($"🔍 Mouvements trouvés: {stats.TotalMovementsFound}");
+        Console.WriteLine($"✅ Mouvements traités: {stats.MovementsProcessedSuccessfully}");
+        Console.WriteLine($"❌ Mouvements en erreur: {stats.MovementsWithErrors}");
+        Console.WriteLine($"📤 Batches envoyés: {stats.BatchesSent}");
+        Console.WriteLine($"📦 Total payloads: {stats.TotalPayloadsSent}");
+        Console.WriteLine($"⏱️ Durée: {stats.TotalProcessingTime.TotalSeconds:F1}s");
+
+        if (stats.TotalMovementsFound > 0)
+        {
+            Console.WriteLine($"📈 Taux de succès: {stats.SuccessRate:F1}%");
+        }
+
+        // Indicateur visuel
+        if (stats.SuccessRate >= 90)
+        {
+            Console.WriteLine("🎉 INT48 : EXCELLENT");
+        }
+        else if (stats.SuccessRate >= 70)
+        {
+            Console.WriteLine("✅ INT48 : BON");
+        }
+        else if (stats.TotalMovementsFound > 0)
+        {
+            Console.WriteLine("⚠️ INT48 : À SURVEILLER");
+        }
+
+        // Étape 4: Mettre à jour le statut dans SpeedWMS (optionnel)
+        if (stats.MovementsProcessedSuccessfully > 0)
+        {
+            Console.WriteLine("\n🔄 Mise à jour du statut dans SpeedWMS...");
+            var processedIds = movements
+                .Take(stats.MovementsProcessedSuccessfully)
+                .Select(m => m.MVT_KEYU)
+                .ToList();
+            
+            string importId = $"INT48_MANUAL_{DateTime.Now:yyyyMMddHHmmss}";
+            await repository.MarkMovementsAsProcessedAsync(processedIds, importId, success: true);
+            Console.WriteLine($"✅ {processedIds.Count} mouvements marqués comme envoyés");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"❌ Erreur lors du traitement INT48: {ex.Message}");
+        Console.WriteLine("⚠️ Le processus continue malgré l'erreur INT48...");
+    }
+}
 
         /// <summary>
         /// Exécute la synchronisation complète
@@ -778,6 +877,9 @@ namespace DynamicsApiToDatabase
                 // LANCEMENT DU PROGRAMME EXTERNE
                 Console.WriteLine("\n🔄 === LANCEMENT DU TRANSLATOR === 🔄");
                 var externalLauncher = serviceProvider.GetService<ExternalProgramLauncher>();
+
+                Console.WriteLine("\n📦 === AJUSTEMENTS D'INVENTAIRE (INT48) === 📦");
+                await ProcessInventoryAdjustmentsAsync(serviceProvider);
 
                 if (externalLauncher!.IsTranslatorAvailable())
                 {

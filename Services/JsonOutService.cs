@@ -22,6 +22,8 @@ namespace DynamicsApiToDatabase.Services
         Task<bool> EnsureImportIdColumnExistsAsync();
         Task LogBLExportAsync(string blNumber, string jsonData, string destination, string clientCode = "BR", string errorMessage = "", string importId = "");
         Task<string> GenerateJsonOutReportAsync();
+        Task LogJsonSentAsync(string itemId, string jsonPayload, string endpoint, string? responseContent = null, int httpCode = 0, string? importId = null, string? status = null);
+        Task UpdateJsonOutStatusAsync(string itemId, string importId, string newStatus, string? responseContent = null, int httpCode = 0);
     }
 
     /// <summary>
@@ -625,5 +627,63 @@ namespace DynamicsApiToDatabase.Services
                 return 0;
             }
         }
+
+        /// <summary>
+        /// 🆕 INT48 SPÉCIFIQUE: UPDATE le statut d'une ligne existante (ne crée pas de doublons)
+        /// </summary>
+        public async Task UpdateJsonOutStatusAsync(
+            string itemId, 
+            string importId, 
+            string newStatus, 
+            string? responseContent = null, 
+            int httpCode = 0)
+        {
+            try
+            {
+                using var connection = new SqlConnection(_connectionString);
+                await connection.OpenAsync();
+
+                // Chercher la ligne existante avec itemId et importId
+                const string updateSql = @"
+                    UPDATE JSON_OUT
+                    SET 
+                        JSON_TREN = @NewStatus,
+                        JSON_TRDA = GETDATE()
+                    WHERE 
+                        JSON_KEYU IN (
+                            SELECT JSON_KEYU 
+                            FROM JSON_OUT 
+                            WHERE JSON_DEST = 'INT48_ADJUSTMENT'
+                              AND JSON_CCLI = 'BR'
+                              AND JSON_IMPORT_ID = @ImportId
+                              AND (
+                                -- Matcher par l'ID du mouvement dans le JSON
+                                (JSON_DATA LIKE '%""id"":""' + @ItemId + '%')
+                                OR (JSON_TREN LIKE '%' + @ItemId + '%')
+                              )
+                        )";
+
+                using var command = new SqlCommand(updateSql, connection);
+                command.Parameters.AddWithValue("@ItemId", itemId);
+                command.Parameters.AddWithValue("@ImportId", importId);
+                command.Parameters.AddWithValue("@NewStatus", newStatus);
+
+                var affectedRows = await command.ExecuteNonQueryAsync();
+
+                if (affectedRows > 0)
+                {
+                    _logger.LogDebug($"✅ Mouvement {itemId} mis à jour: {newStatus}");
+                }
+                else
+                {
+                    _logger.LogWarning($"⚠️ Aucune ligne trouvée pour UPDATE: {itemId} / {importId}");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Erreur UPDATE statut pour {itemId}");
+            }
+        }
     }
+
 }

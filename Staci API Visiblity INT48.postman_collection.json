@@ -1,0 +1,269 @@
+{
+	"info": {
+		"_postman_id": "f3fca961-bb04-46ce-9a15-8e9b11ad87ff",
+		"name": "Staci API Visiblity INT48",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "38083620"
+	},
+	"item": [
+		{
+			"name": "1-Auth",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var response = pm.response.text();\r",
+							"var json = JSON.parse(response);\r",
+							"\r",
+							"pm.test(\"Get Azure AD Token\", function () {\r",
+							"  pm.expect(!json.error && response !=='' && response !== '{}' && json.access_token !=='').to.be.true;\r",
+							"});\r",
+							"\r",
+							"pm.environment.set(\"bearerToken\", json.access_token);"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "grant_type",
+							"value": "{{grant_type}}",
+							"type": "text"
+						},
+						{
+							"key": "client_id",
+							"value": "{{client_id}}",
+							"type": "text"
+						},
+						{
+							"key": "client_secret",
+							"value": "{{client_secret}}",
+							"type": "text"
+						},
+						{
+							"key": "resource",
+							"value": "{{resource}}",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "https://login.microsoftonline.com/{{tenant_id}}/oauth2/token",
+					"protocol": "https",
+					"host": [
+						"login",
+						"microsoftonline",
+						"com"
+					],
+					"path": [
+						"{{tenant_id}}",
+						"oauth2",
+						"token"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "2-Post Athen Service api",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var response = pm.response.text();\r",
+							"var json = JSON.parse(response);\r",
+							"\r",
+							"pm.test(\"Get Azure AD Token\", function () {\r",
+							"  pm.expect(!json.error && response !=='' && response !== '{}' && json.access_token !=='').to.be.true;\r",
+							"});\r",
+							"\r",
+							"pm.environment.set(\"bearerTokenAPI\", json.access_token);"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"grant_type\" :\"client_credentials\",\r\n    \"client_assertion_type\" :\"aad_app\",\r\n    \"client_assertion\"    : \"{{bearerToken}}\",\r\n    \"scope\"        : \"https://inventoryservice.operations365.dynamics.com/.default\",\r\n    \"context\"      : \"15f2c116-8f2e-4f21-8662-9cb76db909e2\",\r\n    \"context_type\" :\"finops-env\"\r\n\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://securityservice.operations365.dynamics.com/token",
+					"protocol": "https",
+					"host": [
+						"securityservice",
+						"operations365",
+						"dynamics",
+						"com"
+					],
+					"path": [
+						"token"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "4-Adjustement",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearerTokenAPI}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "[\r\n  {\r\n    \"id\" :\"0006\",\r\n    \"productId\": \"GANTV\",\r\n    \"organizationId\": \"BR\",\r\n    \"dimensions\": {\r\n      \"siteId\": \"S01\",\r\n      \"locationId\": \"12\",\r\n      \"batchId\": \"\",\r\n      \"wMSLocationId\": \"RECNOLP\",\r\n      \"serialId\": \"\",\r\n      \"statusId\": \"Disponible\",\r\n      \"extendedDimension1\": \"A7X9B2QW8LZ3M5T1N0KJ4V6YDUECRGHPOIWSXMNZLKJHGFDSAQ\"\r\n    },\r\n    \"quantityDataSource\": \"@iv\",\r\n    \"physicalMeasure\": \"adjustment\",\r\n    \"quantity\": 4,\r\n    \"externalReferenceCategory\": \"534343\",\r\n    \"externalReferenceId\": \"55565\",\r\n    \"transDate\": \"2025-07-16\"\r\n  }\r\n]",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://inventoryservice.weu-il107.gateway.prod.island.powerapps.com/api/environment/{{ENVID}}/transaction/adjustment/bulk",
+					"protocol": "https",
+					"host": [
+						"inventoryservice",
+						"weu-il107",
+						"gateway",
+						"prod",
+						"island",
+						"powerapps",
+						"com"
+					],
+					"path": [
+						"api",
+						"environment",
+						"{{ENVID}}",
+						"transaction",
+						"adjustment",
+						"bulk"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "5-Adjustement with BatchId",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearerTokenAPI}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "\r\n   [\r\n  {\r\n    \"id\" :\"0007\",// unique ID\r\n    \"productId\": \"BAINP200\",\r\n    \"organizationId\": \"BR\",\r\n    \"dimensions\": {\r\n      \"siteId\": \"S01\",\r\n      \"locationId\": \"12\",\r\n      \"batchId\": \"40001\",\r\n      \"wMSLocationId\": \"RECNOLP\",\r\n      \"serialId\": \"\",\r\n      \"statusId\": \"Disponible\"\r\n    },\r\n    \"quantityDataSource\": \"@iv\",\r\n    \"physicalMeasure\": \"adjustment\",\r\n    \"quantity\": -2,\r\n    \"externalReferenceCategory\": \"Category\",\r\n    \"externalReferenceId\": \"ENT-INV\",\r\n    \"transDate\": \"2025-07-15\"\r\n  }\r\n]",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://inventoryservice.weu-il107.gateway.prod.island.powerapps.com/api/environment/{{ENVID}}/transaction/adjustment/bulk",
+					"protocol": "https",
+					"host": [
+						"inventoryservice",
+						"weu-il107",
+						"gateway",
+						"prod",
+						"island",
+						"powerapps",
+						"com"
+					],
+					"path": [
+						"api",
+						"environment",
+						"{{ENVID}}",
+						"transaction",
+						"adjustment",
+						"bulk"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "6-Adjustement with SerialNumber",
+			"request": {
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{bearerTokenAPI}}",
+							"type": "string"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "\r\n  [\r\n  {\r\n    \"id\":\"0008\",\r\n    \"productId\": \"RF\",\r\n    \"organizationId\": \"BR\",\r\n    \"dimensions\": {\r\n      \"siteId\": \"S01\",\r\n      \"locationId\": \"12\",\r\n      \"batchId\": \"\",\r\n      \"wMSLocationId\": \"RECNOLP\",\r\n      \"serialId\": \"2\",\r\n      \"statusId\": \"Disponible\"\r\n    },\r\n    \"quantityDataSource\": \"@iv\",\r\n    \"physicalMeasure\": \"adjustment\",\r\n    \"quantity\": 1,\r\n    \"externalReferenceCategory\": \"Comments\",\r\n    \"externalReferenceId\": \"ENT-INV2\",\r\n    \"transDate\": \"2025-07-15\"\r\n  }\r\n]",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "https://inventoryservice.weu-il107.gateway.prod.island.powerapps.com/api/environment/{{ENVID}}/transaction/adjustment/bulk",
+					"protocol": "https",
+					"host": [
+						"inventoryservice",
+						"weu-il107",
+						"gateway",
+						"prod",
+						"island",
+						"powerapps",
+						"com"
+					],
+					"path": [
+						"api",
+						"environment",
+						"{{ENVID}}",
+						"transaction",
+						"adjustment",
+						"bulk"
+					]
+				}
+			},
+			"response": []
+		}
+	]
+}
