@@ -389,6 +389,10 @@ namespace DynamicsApiToDatabase
             services.AddSingleton<InventoryAdjustmentService>();
             services.AddSingleton<SpeedWmsInventoryRepository>();
 
+            // ✅ SERVICES INT39 - Tracking Numbers
+            services.AddSingleton<TrackingNumberService>();
+            services.AddSingleton<TrackingNumberIntegrationService>();
+
             return services;
         }
 
