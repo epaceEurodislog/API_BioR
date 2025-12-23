@@ -161,6 +161,7 @@ namespace DynamicsApiToDatabase.DataAccess.INT48
                     WHERE JSON_API.JSON_DEST = 'INT48_ADJUSTMENT'
                         AND JSON_API.JSON_CCLI = 'BR'
                         AND JSON_API.JSON_IMPORT_ID = @ImportId
+                        AND JSON_API.JSON_TREN = 'EN_ATTENTE'
                 ) AS MVT_UPD
                 WHERE MVT_DAT.MVT_KEYU = MVT_UPD.MVT_KEYU
                     AND MVT_DAT.ART_CODE = CONCAT('BR', MVT_UPD.ART_CODE)
