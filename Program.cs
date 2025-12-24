@@ -389,6 +389,11 @@ namespace DynamicsApiToDatabase
             services.AddSingleton<InventoryAdjustmentService>();
             services.AddSingleton<SpeedWmsInventoryRepository>();
 
+            // ✅ SERVICES INT39 - Tracking Numbers
+            services.AddSingleton<TrackingNumberService>();
+            services.AddSingleton<TrackingNumberIntegrationService>();
+            services.AddSingleton<DynamicsApiToDatabase.DataAccess.INT39.SpeedWmsTrackingRepository>();
+
             return services;
         }
 
@@ -623,7 +628,15 @@ namespace DynamicsApiToDatabase
                     await ProcessInventoryAdjustmentsAsync(serviceProvider);
                 break;
 
+                
+                case "int39":
+                case "tracking":
+                case "trackingnumbers":
+                    Console.WriteLine("\n📦 === SYNCHRONISATION TRACKING NUMBERS (INT39) === 📦");
+                    await ProcessTrackingNumbersAsync(serviceProvider);
+                    break;      
                 default:
+
                     Console.WriteLine($"❌ Type de synchronisation non reconnu : {syncType}");
                     Console.WriteLine("📖 Types disponibles : articles, purchase, return, transfer, sales, blexport, cr_prep, cr_recep");
                     Environment.Exit(1);
@@ -652,6 +665,108 @@ namespace DynamicsApiToDatabase
                 Environment.Exit(1);
             }
         }
+
+
+        /// <summary>
+/// Traite les tracking numbers (INT39)
+/// </summary>
+private static async Task ProcessTrackingNumbersAsync(IServiceProvider serviceProvider)
+{
+    try
+    {
+        var trackingService = serviceProvider.GetRequiredService<TrackingNumberService>();
+        var integrationService = serviceProvider.GetRequiredService<TrackingNumberIntegrationService>();
+
+        Console.WriteLine("🔍 Vérification connectivité Dynamics Tracking Service...");
+        
+        // TODO: Ajouter un test de connectivité si nécessaire
+        // var connectivityOk = await integrationService.TestDynamicsConnectivityAsync();
+
+        Console.WriteLine("✅ Connectivité Tracking Service OK");
+
+        // Étape 1: Récupérer les tracking numbers depuis SpeedWMS
+        Console.WriteLine("\n📥 Récupération des tracking numbers depuis SpeedWMS...");
+        var trackingNumbers = await trackingService.GetAllTrackingNumbersAsync();
+
+        if (trackingNumbers.Count == 0)
+        {
+            Console.WriteLine("📭 Aucun tracking number à traiter");
+            return;
+        }
+
+        Console.WriteLine($"📦 {trackingNumbers.Count} tracking numbers trouvés");
+        Console.WriteLine($"   - Sales Orders: {trackingNumbers.Count(t => t.OrderType == "SALES")}");
+        Console.WriteLine($"   - Transfer Orders: {trackingNumbers.Count(t => t.OrderType == "TRANSFER")}");
+
+        // Étape 2: Traiter et envoyer vers Dynamics 365
+        Console.WriteLine("\n🚀 Envoi des tracking numbers vers Dynamics 365...");
+        
+        int successCount = 0;
+        int errorCount = 0;
+        var startTime = DateTime.Now;
+
+        foreach (var tracking in trackingNumbers)
+        {
+            try
+            {
+                Console.WriteLine($"📤 Traitement {tracking.OrderType} : {tracking.OPE_REDO}");
+                
+                var success = await integrationService.ProcessTrackingNumberAsync(tracking);
+                
+                if (success)
+                {
+                    successCount++;
+                }
+                else
+                {
+                    errorCount++;
+                }
+                
+                // Petit délai entre chaque traitement
+                await Task.Delay(200);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Erreur traitement tracking {tracking.OPE_REDO}: {ex.Message}");
+                errorCount++;
+            }
+        }
+
+        var duration = DateTime.Now - startTime;
+
+        // Étape 3: Afficher les résultats
+        Console.WriteLine("\n📊 === RÉSULTATS INT39 === 📊");
+        Console.WriteLine($"🔍 Tracking numbers trouvés: {trackingNumbers.Count}");
+        Console.WriteLine($"✅ Tracking traités avec succès: {successCount}");
+        Console.WriteLine($"❌ Tracking en erreur: {errorCount}");
+        Console.WriteLine($"⏱️ Durée: {duration.TotalSeconds:F1}s");
+
+        if (trackingNumbers.Count > 0)
+        {
+            var successRate = (double)successCount / trackingNumbers.Count * 100;
+            Console.WriteLine($"📈 Taux de succès: {successRate:F1}%");
+
+            // Indicateur visuel
+            if (successRate >= 90)
+            {
+                Console.WriteLine("🎉 INT39 : EXCELLENT");
+            }
+            else if (successRate >= 70)
+            {
+                Console.WriteLine("✅ INT39 : BON");
+            }
+            else
+            {
+                Console.WriteLine("⚠️ INT39 : À SURVEILLER");
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"❌ Erreur lors du traitement INT39: {ex.Message}");
+        Console.WriteLine("⚠️ Le processus continue malgré l'erreur INT39...");
+    }
+}
 
         /// <summary>
         /// Lance le translator avec le type spécifique
@@ -880,6 +995,9 @@ namespace DynamicsApiToDatabase
 
                 Console.WriteLine("\n📦 === AJUSTEMENTS D'INVENTAIRE (INT48) === 📦");
                 await ProcessInventoryAdjustmentsAsync(serviceProvider);
+
+                Console.WriteLine("\n📦 === TRACKING NUMBERS (INT39) === 📦");
+                await ProcessTrackingNumbersAsync(serviceProvider);
 
                 if (externalLauncher!.IsTranslatorAvailable())
                 {
