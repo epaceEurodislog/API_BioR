@@ -16,11 +16,11 @@ namespace DynamicsApiToDatabase.Models.INT39
         [JsonPropertyName("BR3PLPackingSlipId")]
         public string BR3PLPackingSlipId { get; set; }
 
-        [JsonPropertyName("BRDocStatus")]
-        public string BRDocStatus { get; set; }
+        [JsonPropertyName("BRDocuStatus")]
+        public string BRDocuStatus { get; set; }
 
-        [JsonPropertyName("BRDocStatusDate")]
-        public string BRDocStatusDate { get; set; }
+        [JsonPropertyName("BRDOcStatusDate")]
+        public string BRDOcStatusDate { get; set; }
 
         [JsonPropertyName("CarrierCode")]
         public string CarrierCode { get; set; }

@@ -1,4 +1,5 @@
 using DynamicsApiToDatabase.Models.INT39;
+using DynamicsApiToDatabase.DataAccess.INT39;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Text;
@@ -12,44 +13,82 @@ namespace DynamicsApiToDatabase.Services
         private readonly IConfiguration _configuration;
         private readonly ILogger<TrackingNumberIntegrationService> _logger;
         private readonly AuthenticationService _authService;
+        private readonly IJsonOutService _jsonOutService;
+        private readonly SpeedWmsTrackingRepository _repository;
         private readonly string _baseUrl;
 
         public TrackingNumberIntegrationService(
             HttpClient httpClient,
             IConfiguration configuration,
             ILogger<TrackingNumberIntegrationService> logger,
-            AuthenticationService authService)
+            AuthenticationService authService,
+            IJsonOutService jsonOutService,
+            SpeedWmsTrackingRepository repository)
         {
             _httpClient = httpClient;
             _configuration = configuration;
             _logger = logger;
             _authService = authService;
+            _jsonOutService = jsonOutService;
+            _repository = repository;
             _baseUrl = configuration["ResourceUrl"];
         }
 
-        /// <summary>
-        /// Transforme les données SPEED en requête D365
-        /// </summary>
-        private TrackingNumberD365Request MapToD365Request(TrackingNumberModel model)
+/// <summary>
+/// Transforme les données SPEED en requête D365
+/// </summary>
+private TrackingNumberD365Request MapToD365Request(TrackingNumberModel model)
+{
+    // Conversion de OPE_DATETIME (string "YYYYMMDD HHmmss") vers format ISO
+    string docStatusDate = "1900-01-01T00:00:00Z"; // Valeur par défaut
+    
+    if (!string.IsNullOrWhiteSpace(model.OPE_DATETIME)) // ✅ Ajout WhiteSpace check
+    {
+        try
         {
-            // Gestion de la date de statut de documentation
-            string docStatusDate = "1900-01-01T00:00:00Z"; // Valeur par défaut
-            if (model.OPE_DATEHEURE11.HasValue)
+            var trimmed = model.OPE_DATETIME.Trim();
+            
+            if (trimmed.Length >= 15)
             {
-                docStatusDate = model.OPE_DATEHEURE11.Value.ToString("yyyy-MM-ddTHH:mm:ssZ");
+                var parts = trimmed.Split(' ');
+                if (parts.Length == 2 && parts[0].Length == 8 && parts[1].Length >= 6)
+                {
+                    var datePart = parts[0]; // YYYYMMDD
+                    var timePart = parts[1].PadRight(6, '0'); // HHmmss
+                    
+                    if (int.TryParse(datePart.Substring(0, 4), out var year) &&
+                        int.TryParse(datePart.Substring(4, 2), out var month) &&
+                        int.TryParse(datePart.Substring(6, 2), out var day) &&
+                        int.TryParse(timePart.Substring(0, 2), out var hour) &&
+                        int.TryParse(timePart.Substring(2, 2), out var minute) &&
+                        int.TryParse(timePart.Substring(4, 2), out var second))
+                    {
+                        var dateTime = new DateTime(year, month, day, hour, minute, second);
+                        docStatusDate = dateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
+                    }
+                }
             }
-
-            return new TrackingNumberD365Request
-            {
-                DataAreaId = "br",
-                BROrderId = model.OPE_REDO, // Référence donneur ordre
-                BRTrackingNumber = model.SEX_URLT ?? string.Empty, // URL Tracking
-                BR3PLPackingSlipId = model.OPE_KEYU ?? string.Empty, // N° Expédition STACI
-                BRDocStatus = model.OPE_TOP22 ?? "0", // Doc reçu (0 ou 1)
-                BRDocStatusDate = docStatusDate,
-                CarrierCode = model.OPE_CTRA ?? string.Empty
-            };
         }
+        catch (Exception ex)
+        {
+            _logger.LogWarning($"⚠️ Impossible de parser OPE_DATETIME: '{model.OPE_DATETIME}' - {ex.Message}");
+        }
+    }
+
+    // Conversion OPE_TOP22 : 'Oui' -> '1', 'Non' -> '0'
+    string brDocuStatus = model.OPE_TOP22 == "Oui" ? "1" : "0";
+
+    return new TrackingNumberD365Request
+    {
+        DataAreaId = "br",
+        BROrderId = model.OPE_REDO ?? string.Empty,
+        BRTrackingNumber = model.SEX_URLT ?? string.Empty,
+        BR3PLPackingSlipId = model.OPE_KEYU ?? string.Empty,
+        BRDocuStatus = brDocuStatus,
+        BRDOcStatusDate = docStatusDate,
+        CarrierCode = model.OPE_CTRA ?? string.Empty
+    };
+}
 
         /// <summary>
         /// Étape 1 : POST vers BRTrackingNumbers (création/mise à jour)
@@ -80,19 +119,12 @@ namespace DynamicsApiToDatabase.Services
                 if (response.IsSuccessStatusCode)
                 {
                     _logger.LogInformation($"✅ Tracking Number créé/mis à jour : {request.BROrderId}");
-                    
-                    // Log dans JSON_OUT
-                    await LogToJsonOutAsync(request, "POST_SUCCESS", await response.Content.ReadAsStringAsync());
-                    
                     return true;
                 }
                 else
                 {
                     var errorContent = await response.Content.ReadAsStringAsync();
                     _logger.LogError($"❌ Erreur POST Tracking Number : {response.StatusCode} - {errorContent}");
-                    
-                    await LogToJsonOutAsync(request, "POST_ERROR", errorContent);
-                    
                     return false;
                 }
             }
@@ -142,43 +174,183 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// Processus complet : POST + Validation
+        /// Processus complet : INSERT JSON_OUT → POST → Validation → UPDATE SpeedWMS → UPDATE JSON_OUT
         /// </summary>
         public async Task<bool> ProcessTrackingNumberAsync(TrackingNumberModel model)
         {
+            string importId = $"INT39_{model.OPE_REDO}_{DateTime.Now:yyyyMMddHHmmss}";
+            
             _logger.LogInformation($"🔄 Traitement complet Tracking Number : {model.OPE_REDO}");
 
-            // Étape 1 : POST
-            var postSuccess = await PostTrackingNumberAsync(model);
-            if (!postSuccess)
+            try
             {
-                _logger.LogError($"❌ Échec POST, arrêt du traitement pour {model.OPE_REDO}");
+                var request = MapToD365Request(model);
+                
+                // ÉTAPE A: INSERT dans JSON_OUT (statut EN_ATTENTE)
+                await LogPendingToJsonOutAsync(request, importId);
+
+                // ÉTAPE B: POST vers BRTrackingNumbers
+                var postSuccess = await PostTrackingNumberInternalAsync(request);
+                if (!postSuccess)
+                {
+                    _logger.LogError($"❌ Échec POST, arrêt du traitement pour {model.OPE_REDO}");
+                    await UpdateJsonOutErrorAsync(request, importId, "POST échoué");
+                    return false;
+                }
+
+                // Petit délai entre les deux appels
+                await Task.Delay(500);
+
+                // ÉTAPE C: POST vers PostTrackingNumber (validation)
+                var validateSuccess = await ValidateTrackingNumberAsync(model.OPE_REDO);
+                if (!validateSuccess)
+                {
+                    _logger.LogWarning($"⚠️ POST réussi mais validation échouée pour {model.OPE_REDO}");
+                    await UpdateJsonOutErrorAsync(request, importId, "Validation échouée");
+                    return false;
+                }
+
+                // ÉTAPE D: UPDATE JSON_OUT avec succès (ENVOYE)
+                await UpdateJsonOutSuccessAsync(request, importId);
+
+                // ÉTAPE E: UPDATE OPE_TOP39=1 dans OPE_DAT (APRÈS envoi réussi)
+                await _repository.MarkTrackingAsProcessedAsync(
+                    new List<string> { model.OPE_KEYU }, 
+                    importId, 
+                    success: true);
+
+                _logger.LogInformation($"✅ Traitement complet réussi pour {model.OPE_REDO}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception traitement tracking {model.OPE_REDO}");
+                await UpdateJsonOutErrorAsync(MapToD365Request(model), importId, ex.Message);
                 return false;
             }
-
-            // Petit délai entre les deux appels
-            await Task.Delay(500);
-
-            // Étape 2 : Validation
-            var validateSuccess = await ValidateTrackingNumberAsync(model.OPE_REDO);
-            if (!validateSuccess)
-            {
-                _logger.LogWarning($"⚠️ POST réussi mais validation échouée pour {model.OPE_REDO}");
-                return false;
-            }
-
-            _logger.LogInformation($"✅ Traitement complet réussi pour {model.OPE_REDO}");
-            return true;
         }
 
         /// <summary>
-        /// Log dans la table JSON_OUT_INT39
+        /// ÉTAPE A: INSERT initial dans JSON_OUT avec statut EN_ATTENTE
         /// </summary>
-        private async Task LogToJsonOutAsync(TrackingNumberD365Request request, string status, string response)
+        private async Task LogPendingToJsonOutAsync(TrackingNumberD365Request request, string importId)
         {
-            // TODO: Implémenter l'insertion dans JSON_OUT_INT39
-            // Similaire aux autres endpoints
-            _logger.LogDebug($"📝 Log JSON_OUT_INT39 : {status} - {request.BROrderId}");
+            try
+            {
+                var jsonPayload = JsonSerializer.Serialize(request, new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    WriteIndented = false
+                });
+
+                await _jsonOutService.LogJsonSentAsync(
+                    itemId: request.BR3PLPackingSlipId,
+                    jsonPayload: jsonPayload,
+                    endpoint: "INT39_TRACKING",
+                    responseContent: "EN_ATTENTE",
+                    httpCode: 0,
+                    importId: importId,
+                    status: "EN_ATTENTE"
+                );
+
+                _logger.LogDebug($"📝 Tracking {request.BROrderId} enregistré dans JSON_OUT - EN_ATTENTE");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"⚠️ Erreur INSERT JSON_OUT pour {request.BROrderId}");
+                throw; // Bloquer si INSERT échoue
+            }
+        }
+
+        /// <summary>
+        /// ÉTAPE B: POST vers BRTrackingNumbers (version interne sans double log)
+        /// </summary>
+        private async Task<bool> PostTrackingNumberInternalAsync(TrackingNumberD365Request request)
+        {
+            try
+            {
+                var token = await _authService.GetAccessTokenAsync();
+                _httpClient.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+                var endpoint = $"{_baseUrl}data/BRTrackingNumbers";
+
+                _logger.LogInformation($"📤 POST Tracking Number - OrderId: {request.BROrderId}");
+
+                var jsonContent = JsonSerializer.Serialize(request, new JsonSerializerOptions
+                {
+                    WriteIndented = false
+                });
+
+                _logger.LogDebug($"JSON Request:\n{jsonContent}");
+
+                var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+                var response = await _httpClient.PostAsync(endpoint, content);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    _logger.LogInformation($"✅ Tracking Number créé/mis à jour : {request.BROrderId}");
+                    return true;
+                }
+                else
+                {
+                    var errorContent = await response.Content.ReadAsStringAsync();
+                    _logger.LogError($"❌ Erreur POST Tracking Number : {response.StatusCode} - {errorContent}");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"❌ Exception POST Tracking Number : {request.BROrderId}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// ÉTAPE D: UPDATE JSON_OUT avec succès (ENVOYE)
+        /// </summary>
+        private async Task UpdateJsonOutSuccessAsync(TrackingNumberD365Request request, string importId)
+        {
+            try
+            {
+                await _jsonOutService.UpdateJsonOutStatusAsync(
+                    itemId: request.BR3PLPackingSlipId,
+                    importId: importId,
+                    newStatus: "ENVOYE",
+                    responseContent: "Tracking envoyé avec succès",
+                    httpCode: 200
+                );
+
+                _logger.LogDebug($"📝 Tracking {request.BROrderId} mis à jour - ENVOYE");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"⚠️ Erreur UPDATE JSON_OUT succès pour {request.BROrderId}");
+            }
+        }
+
+        /// <summary>
+        /// <summary>
+        /// ÉTAPE D (erreur): UPDATE JSON_OUT avec erreur (ERREUR)
+        /// </summary>
+        private async Task UpdateJsonOutErrorAsync(TrackingNumberD365Request request, string importId, string errorMessage)
+        {
+            try
+            {
+                await _jsonOutService.UpdateJsonOutStatusAsync(
+                    itemId: request.BR3PLPackingSlipId,
+                    importId: importId,
+                    newStatus: "ERREUR",
+                    responseContent: errorMessage,
+                    httpCode: 500
+                );
+
+                _logger.LogDebug($"📝 Tracking {request.BROrderId} mis à jour - ERREUR");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"⚠️ Erreur UPDATE JSON_OUT erreur pour {request.BROrderId}");
+            }
         }
     }
 }

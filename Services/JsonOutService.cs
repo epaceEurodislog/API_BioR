@@ -629,7 +629,7 @@ namespace DynamicsApiToDatabase.Services
         }
 
         /// <summary>
-        /// 🆕 INT48 SPÉCIFIQUE: UPDATE le statut d'une ligne existante (ne crée pas de doublons)
+        /// 🆕 INT48/INT39 SPÉCIFIQUE: UPDATE le statut d'une ligne existante (ne crée pas de doublons)
         /// </summary>
         public async Task UpdateJsonOutStatusAsync(
             string itemId, 
@@ -653,12 +653,13 @@ namespace DynamicsApiToDatabase.Services
                         JSON_KEYU IN (
                             SELECT JSON_KEYU 
                             FROM JSON_OUT 
-                            WHERE JSON_DEST = 'INT48_ADJUSTMENT'
+                            WHERE (JSON_DEST = 'INT48_ADJUSTMENT' OR JSON_DEST = 'INT39_TRACKING')
                               AND JSON_CCLI = 'BR'
                               AND JSON_IMPORT_ID = @ImportId
                               AND (
-                                -- Matcher par l'ID du mouvement dans le JSON
+                                -- Matcher par l'ID du mouvement/tracking dans le JSON
                                 (JSON_DATA LIKE '%""id"":""' + @ItemId + '%')
+                                OR (JSON_DATA LIKE '%""br3PLPackingSlipId"":""' + @ItemId + '%')
                                 OR (JSON_TREN LIKE '%' + @ItemId + '%')
                               )
                         )";
@@ -672,7 +673,7 @@ namespace DynamicsApiToDatabase.Services
 
                 if (affectedRows > 0)
                 {
-                    _logger.LogDebug($"✅ Mouvement {itemId} mis à jour: {newStatus}");
+                    _logger.LogDebug($"✅ Item {itemId} mis à jour: {newStatus}");
                 }
                 else
                 {

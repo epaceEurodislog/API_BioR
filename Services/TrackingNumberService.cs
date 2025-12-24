@@ -15,116 +15,170 @@ namespace DynamicsApiToDatabase.Services
             IConfiguration configuration,
             ILogger<TrackingNumberService> logger)
         {
-            // Utiliser la même connexion que SpeedWmsDataService
-            _speedConnectionString = configuration.GetConnectionString("SpeedWMS") 
+
+            _speedConnectionString = configuration.GetConnectionString("SpeedWmsConnection") 
                 ?? configuration.GetConnectionString("DefaultConnection");
             _logger = logger;
         }
 
         /// <summary>
-        /// Récupère les tracking numbers depuis SPEED (requête SQL à fournir par collègue)
+        /// Récupère les tracking numbers pour les COMMANDES CLIENT (Sales Orders)
         /// </summary>
-        public async Task<List<TrackingNumberModel>> GetTrackingNumbersAsync(
-            DateTime? modifiedSince = null,
-            int? limit = null)
+        public async Task<List<TrackingNumberModel>> GetSalesOrdersTrackingNumbersAsync(int? limit = null)
         {
-            _logger.LogInformation("📦 Récupération des tracking numbers depuis SPEED...");
+            _logger.LogInformation("📦 Récupération des tracking numbers COMMANDES CLIENT depuis SPEED...");
 
             try
             {
                 using var connection = new SqlConnection(_speedConnectionString);
                 await connection.OpenAsync();
 
-                // TODO: Remplacer par la requête SQL fournie par le collègue
+                // Requête SQL fournie par le collègue - COMMANDES CLIENT
                 var query = @"
-                    -- REQUÊTE SQL À FOURNIR
-                    -- Doit récupérer les données de OPE_DAT et SEX_DAT
-                    -- Filtres : ACT_CODE='COSMETIQUE', OPE_CCLI='BR'
-                    -- Doit identifier le type (Sales Order ou Transfer Order)
-                    SELECT TOP (@Limit)
+                    SELECT " + (limit.HasValue ? $"TOP {limit.Value}" : "") + @"
                         OPE_DAT.ACT_CODE,
                         OPE_DAT.OPE_CCLI,
                         OPE_DAT.OPE_REDO,
-                        OPE_DAT.OPE_KEYU,
-                        OPE_DAT.OPE_STAT,
+                        OPE_DAT.OPE_RTIE,
+                        CASE 
+                            WHEN OPE_DAT.OPE_STAT = '010' THEN 'EN SAISIE'
+                            WHEN OPE_DAT.OPE_STAT = '020' THEN 'EN VAGUE'
+                            WHEN OPE_DAT.OPE_STAT = '030' THEN 'EN PREPA'
+                            WHEN OPE_DAT.OPE_STAT = '040' THEN 'VALIDEE'
+                            WHEN OPE_DAT.OPE_STAT = '050' THEN 'ANNULEE'
+                            WHEN OPE_DAT.OPE_STAT = '060' THEN 'EN EXPEDITION'
+                            WHEN OPE_DAT.OPE_STAT = '070' THEN 'EXPEDIEE'
+                        END AS OPE_STAT,
                         OPE_DAT.OPE_MODA,
                         OPE_DAT.OPE_MOHE,
                         OPE_DAT.OPE_CTRA,
-                        OPE_DAT.OPE_TOP28,
-                        OPE_DAT.OPE_TOP22,
-                        OPE_DAT.OPE_DATEHEURE11,
-                        SEX_DAT.SEX_SUPR,
-                        SEX_DAT.SEX_URLT,
-                        'SALES' AS OrderType -- ou 'TRANSFER' selon la logique
-                    FROM OPE_DAT
-                    LEFT JOIN SEX_DAT ON OPE_DAT.XXX = SEX_DAT.YYY
-                    WHERE OPE_DAT.ACT_CODE = 'COSMETIQUE'
-                      AND OPE_DAT.OPE_CCLI = 'BR'
-                      AND (@ModifiedSince IS NULL OR OPE_DAT.OPE_MODA >= @ModifiedSince)
-                    ORDER BY OPE_DAT.OPE_MODA DESC";
+                        CASE WHEN OPE_DAT.OPE_TOP28 = '0' THEN 'Non' ELSE 'Oui' END AS OPE_TOP28,
+                        CASE WHEN OPE_DAT.OPE_TOP22 = '0' THEN 'Non' ELSE 'Oui' END AS OPE_TOP22,
+                        CONCAT(OPE_DAT.OPE_DATE1, ' ', OPE_DAT.OPE_HEURE1) AS OPE_DATETIME,
+                        CASE WHEN COALESCE(SEX_DAT.SEX_SUPR, '') = '' THEN COALESCE(SEX_DAT.SEX_SUPE, '') ELSE COALESCE(SEX_DAT.SEX_SUPR, '') END AS SEX_TRACKING,
+                        COALESCE(SEX_DAT.SEX_URLT, '') AS SEX_URLT,
+                        OPE_DAT.OPE_KEYU
+                    FROM ope_dat
+                    LEFT OUTER JOIN sex_dat ON ope_dat.act_code = sex_dat.sex_act AND ope_dat.ope_nooe = sex_dat.sex_nooe
+                    WHERE ope_dat.act_code = 'COSMETIQUE'
+                    AND ope_dat.ope_crqi = 'Interface'
+                    AND ope_dat.ope_ccli = 'BR'";
 
-                var parameters = new
-                {
-                    ModifiedSince = modifiedSince,
-                    Limit = limit ?? 1000
-                };
-
-                var results = await connection.QueryAsync<TrackingNumberModel>(query, parameters);
+                var results = await connection.QueryAsync<TrackingNumberModel>(query);
                 var trackingNumbers = results.ToList();
 
-                _logger.LogInformation($"✅ {trackingNumbers.Count} tracking numbers récupérés");
+                // Marquer comme Sales Orders
+                trackingNumbers.ForEach(t => t.OrderType = "SALES");
+
+                _logger.LogInformation($"✅ {trackingNumbers.Count} tracking numbers SALES ORDERS récupérés");
                 return trackingNumbers;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "❌ Erreur lors de la récupération des tracking numbers");
+                _logger.LogError(ex, "❌ Erreur lors de la récupération des tracking numbers SALES ORDERS");
                 throw;
             }
         }
 
         /// <summary>
-        /// Récupère les tracking numbers pour un numéro de commande spécifique
+        /// Récupère les tracking numbers pour les ORDRES DE TRANSFERT (Transfer Orders)
         /// </summary>
-        public async Task<TrackingNumberModel> GetTrackingNumberByOrderIdAsync(string orderId)
+        public async Task<List<TrackingNumberModel>> GetTransferOrdersTrackingNumbersAsync(int? limit = null)
         {
-            _logger.LogInformation($"🔍 Recherche tracking pour commande : {orderId}");
+            _logger.LogInformation("📦 Récupération des tracking numbers ORDRES DE TRANSFERT depuis SPEED...");
 
             try
             {
                 using var connection = new SqlConnection(_speedConnectionString);
                 await connection.OpenAsync();
 
+                // Requête SQL fournie par le collègue - ORDRES DE TRANSFERT
                 var query = @"
-                    -- Requête pour une commande spécifique
-                    SELECT TOP 1
-                        OPE_DAT.*,
-                        SEX_DAT.*
-                    FROM OPE_DAT
-                    LEFT JOIN SEX_DAT ON OPE_DAT.XXX = SEX_DAT.YYY
-                    WHERE OPE_DAT.OPE_REDO = @OrderId
-                      AND OPE_DAT.ACT_CODE = 'COSMETIQUE'
-                      AND OPE_DAT.OPE_CCLI = 'BR'";
+                    SELECT " + (limit.HasValue ? $"TOP {limit.Value}" : "") + @"
+                        OPE_DAT.ACT_CODE,
+                        OPE_DAT.OPE_CCLI,
+                        OPE_DAT.OPE_REDO,
+                        OPE_DAT.OPE_RTIE,
+                        CASE 
+                            WHEN OPE_DAT.OPE_STAT = '010' THEN 'EN SAISIE'
+                            WHEN OPE_DAT.OPE_STAT = '020' THEN 'EN VAGUE'
+                            WHEN OPE_DAT.OPE_STAT = '030' THEN 'EN PREPA'
+                            WHEN OPE_DAT.OPE_STAT = '040' THEN 'VALIDEE'
+                            WHEN OPE_DAT.OPE_STAT = '050' THEN 'ANNULEE'
+                            WHEN OPE_DAT.OPE_STAT = '060' THEN 'EN EXPEDITION'
+                            WHEN OPE_DAT.OPE_STAT = '070' THEN 'EXPEDIEE'
+                        END AS OPE_STAT,
+                        OPE_DAT.OPE_MODA,
+                        OPE_DAT.OPE_MOHE,
+                        OPE_DAT.OPE_CTRA,
+                        CASE WHEN OPE_DAT.OPE_TOP28 = '0' THEN 'Non' ELSE 'Oui' END AS OPE_TOP28,
+                        CASE WHEN OPE_DAT.OPE_TOP22 = '0' THEN 'Non' ELSE 'Oui' END AS OPE_TOP22,
+                        CONCAT(OPE_DAT.OPE_DATE1, ' ', OPE_DAT.OPE_HEURE1) AS OPE_DATETIME,
+                        CASE WHEN COALESCE(SEX_DAT.SEX_SUPR, '') = '' THEN SEX_DAT.SEX_SUPE ELSE SEX_DAT.SEX_SUPR END AS SEX_TRACKING,
+                        COALESCE(SEX_DAT.SEX_URLT, '') AS SEX_URLT,
+                        OPE_DAT.OPE_KEYU
+                    FROM ope_dat
+                    LEFT OUTER JOIN sex_dat ON ope_dat.act_code = sex_dat.sex_act AND ope_dat.ope_nooe = sex_dat.sex_nooe
+                    WHERE ope_dat.act_code = 'COSMETIQUE'
+                    AND ope_dat.ope_crqi = 'Interface'
+                    AND ope_dat.ope_ccli = 'BR'";
 
-                var result = await connection.QueryFirstOrDefaultAsync<TrackingNumberModel>(
-                    query,
-                    new { OrderId = orderId });
+                var results = await connection.QueryAsync<TrackingNumberModel>(query);
+                var trackingNumbers = results.ToList();
 
-                if (result != null)
-                {
-                    _logger.LogInformation($"✅ Tracking trouvé pour {orderId}");
-                }
-                else
-                {
-                    _logger.LogWarning($"⚠️ Aucun tracking trouvé pour {orderId}");
-                }
+                // Marquer comme Transfer Orders
+                trackingNumbers.ForEach(t => t.OrderType = "TRANSFER");
 
-                return result;
+                _logger.LogInformation($"✅ {trackingNumbers.Count} tracking numbers TRANSFER ORDERS récupérés");
+                return trackingNumbers;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"❌ Erreur lors de la recherche du tracking {orderId}");
+                _logger.LogError(ex, "❌ Erreur lors de la récupération des tracking numbers TRANSFER ORDERS");
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Récupère TOUS les tracking numbers (Sales + Transfer)
+        /// </summary>
+        public async Task<List<TrackingNumberModel>> GetAllTrackingNumbersAsync(int? limit = null)
+        {
+            _logger.LogInformation("📦 Récupération de TOUS les tracking numbers depuis SPEED...");
+
+            var salesOrders = await GetSalesOrdersTrackingNumbersAsync(limit);
+            var transferOrders = await GetTransferOrdersTrackingNumbersAsync(limit);
+
+            var allTracking = new List<TrackingNumberModel>();
+            allTracking.AddRange(salesOrders);
+            allTracking.AddRange(transferOrders);
+
+            _logger.LogInformation($"✅ Total : {allTracking.Count} tracking numbers récupérés " +
+                $"(Sales: {salesOrders.Count}, Transfer: {transferOrders.Count})");
+
+            return allTracking;
+        }
+
+        /// <summary>
+        /// Récupère un tracking number pour un numéro de commande spécifique
+        /// </summary>
+        public async Task<TrackingNumberModel> GetTrackingNumberByOrderIdAsync(string orderId)
+        {
+            _logger.LogInformation($"🔍 Recherche tracking pour commande : {orderId}");
+
+            var allTracking = await GetAllTrackingNumbersAsync();
+            var result = allTracking.FirstOrDefault(t => t.OPE_REDO == orderId);
+
+            if (result != null)
+            {
+                _logger.LogInformation($"✅ Tracking trouvé pour {orderId} (Type: {result.OrderType})");
+            }
+            else
+            {
+                _logger.LogWarning($"⚠️ Aucun tracking trouvé pour {orderId}");
+            }
+
+            return result;
         }
     }
 }
