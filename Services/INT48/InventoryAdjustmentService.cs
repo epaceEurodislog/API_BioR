@@ -105,10 +105,7 @@ namespace DynamicsApiToDatabase.Services.INT48
                         // ÉTAPE A: INSERT dans JSON_OUT (statut EN_ATTENTE) - 1 ligne par mouvement
                         await LogBatchPendingAsync(batch, batchIndex, importId);
 
-                        // ÉTAPE B: UPDATE MVT_TOP3=1 dans MVT_DAT
-                        await _repository.MarkMovementsAsProcessedAsync(mvtKeys, importId, success: true);
-
-                        // ÉTAPE C: Envoi API Dynamics 365
+                        // ÉTAPE B: Envoi API Dynamics 365
                         var (statusCode, responseContent) = await SendInventoryAdjustmentBatchAsync(
                             batch, 
                             azureToken, 
@@ -119,8 +116,11 @@ namespace DynamicsApiToDatabase.Services.INT48
                         stats.BatchesSent++;
                         stats.TotalPayloadsSent++;
 
-                        // ÉTAPE D: UPDATE JSON_OUT avec succès (ENVOYE) - 1 ligne par mouvement
+                        // ÉTAPE C: UPDATE JSON_OUT avec succès (ENVOYE) - 1 ligne par mouvement
                         await UpdateJsonOutSuccessInt48Async(batch, batchIndex, importId, responseContent, statusCode);
+
+                        // ÉTAPE D: UPDATE MVT_TOP3=1 dans MVT_DAT (APRÈS envoi réussi)
+                        await _repository.MarkMovementsAsProcessedAsync(mvtKeys, importId, success: true);
                     }
                     catch (Exception ex)
                     {
