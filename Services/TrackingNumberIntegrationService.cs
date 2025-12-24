@@ -15,6 +15,7 @@ namespace DynamicsApiToDatabase.Services
         private readonly AuthenticationService _authService;
         private readonly IJsonOutService _jsonOutService;
         private readonly SpeedWmsTrackingRepository _repository;
+        private readonly TrackingNumberService _trackingNumberService;
         private readonly string _baseUrl;
 
         public TrackingNumberIntegrationService(
@@ -23,7 +24,8 @@ namespace DynamicsApiToDatabase.Services
             ILogger<TrackingNumberIntegrationService> logger,
             AuthenticationService authService,
             IJsonOutService jsonOutService,
-            SpeedWmsTrackingRepository repository)
+            SpeedWmsTrackingRepository repository,
+            TrackingNumberService trackingNumberService)
         {
             _httpClient = httpClient;
             _configuration = configuration;
@@ -31,6 +33,7 @@ namespace DynamicsApiToDatabase.Services
             _authService = authService;
             _jsonOutService = jsonOutService;
             _repository = repository;
+            _trackingNumberService = trackingNumberService;
             _baseUrl = configuration["ResourceUrl"];
         }
 
@@ -174,7 +177,7 @@ private TrackingNumberD365Request MapToD365Request(TrackingNumberModel model)
         }
 
         /// <summary>
-        /// Processus complet : INSERT JSON_OUT → POST → Validation → UPDATE SpeedWMS → UPDATE JSON_OUT
+        /// Processus complet : SELECT Speed → INSERT JSON_OUT → UPDATE TOP15 → Envoi API → UPDATE JSON_OUT
         /// </summary>
         public async Task<bool> ProcessTrackingNumberAsync(TrackingNumberModel model)
         {
@@ -186,10 +189,28 @@ private TrackingNumberD365Request MapToD365Request(TrackingNumberModel model)
             {
                 var request = MapToD365Request(model);
                 
-                // ÉTAPE A: INSERT dans JSON_OUT (statut EN_ATTENTE)
+                // ÉTAPE 1: SELECT données depuis Speed (déjà faits lors du GetAllTrackingNumbersAsync)
+                _logger.LogDebug($"📋 ÉTAPE 1 : Données Speed chargées pour {model.OPE_REDO}");
+
+                // ÉTAPE 2: INSERT dans JSON_OUT (statut EN_ATTENTE)
+                _logger.LogInformation($"📝 ÉTAPE 2 : INSERT JSON_OUT");
                 await LogPendingToJsonOutAsync(request, importId);
 
-                // ÉTAPE B: POST vers BRTrackingNumbers
+                // ÉTAPE 3: UPDATE OPE_TOP15=1 dans Speed pour cette commande
+                _logger.LogInformation($"🔄 ÉTAPE 3 : Mise à jour OPE_TOP15 pour {model.OPE_REDO}");
+                try
+                {
+                    var rowsUpdated = await _trackingNumberService.UpdateOpeTop15ForInt39TrackingAsync();
+                    _logger.LogInformation($"✅ {rowsUpdated} ligne(s) mise(s) à jour - OPE_TOP15 = 1");
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, $"⚠️ Erreur lors de la mise à jour OPE_TOP15 pour {model.OPE_REDO}");
+                    // Continue quand même avec l'envoi API
+                }
+
+                // ÉTAPE 4: POST vers BRTrackingNumbers (Envoi API)
+                _logger.LogInformation($"🚀 ÉTAPE 4 : Envoi API");
                 var postSuccess = await PostTrackingNumberInternalAsync(request);
                 if (!postSuccess)
                 {
@@ -198,10 +219,10 @@ private TrackingNumberD365Request MapToD365Request(TrackingNumberModel model)
                     return false;
                 }
 
-                // Petit délai entre les deux appels
+                // Petit délai entre les deux appels API
                 await Task.Delay(500);
 
-                // ÉTAPE C: POST vers PostTrackingNumber (validation)
+                // Validation POST (optionnel)
                 var validateSuccess = await ValidateTrackingNumberAsync(model.OPE_REDO);
                 if (!validateSuccess)
                 {
@@ -210,10 +231,11 @@ private TrackingNumberD365Request MapToD365Request(TrackingNumberModel model)
                     return false;
                 }
 
-                // ÉTAPE D: UPDATE JSON_OUT avec succès (ENVOYE)
+                // ÉTAPE 5: UPDATE JSON_OUT de EN_ATTENTE à ENVOYE
+                _logger.LogInformation($"📝 ÉTAPE 5 : UPDATE JSON_OUT - ENVOYE");
                 await UpdateJsonOutSuccessAsync(request, importId);
 
-                // ÉTAPE E: UPDATE OPE_TOP39=1 dans OPE_DAT (APRÈS envoi réussi)
+                // UPDATE OPE_TOP39=1 dans OPE_DAT (marquage comme traité)
                 await _repository.MarkTrackingAsProcessedAsync(
                     new List<string> { model.OPE_KEYU }, 
                     importId, 

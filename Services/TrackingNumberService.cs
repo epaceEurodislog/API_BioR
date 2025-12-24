@@ -62,6 +62,7 @@ namespace DynamicsApiToDatabase.Services
                     LEFT OUTER JOIN sex_dat ON ope_dat.act_code = sex_dat.sex_act AND ope_dat.ope_nooe = sex_dat.sex_nooe
                     WHERE ope_dat.act_code = 'COSMETIQUE'
                     AND ope_dat.ope_crqi = 'Interface'
+                    AND coalesce(OPE_DAT.OPE_TOP15,0) <> 1
                     AND ope_dat.ope_ccli = 'BR'";
 
                 var results = await connection.QueryAsync<TrackingNumberModel>(query);
@@ -121,6 +122,7 @@ namespace DynamicsApiToDatabase.Services
                     LEFT OUTER JOIN sex_dat ON ope_dat.act_code = sex_dat.sex_act AND ope_dat.ope_nooe = sex_dat.sex_nooe
                     WHERE ope_dat.act_code = 'COSMETIQUE'
                     AND ope_dat.ope_crqi = 'Interface'
+                    AND coalesce(OPE_DAT.OPE_TOP15,0) <> 1
                     AND ope_dat.ope_ccli = 'BR'";
 
                 var results = await connection.QueryAsync<TrackingNumberModel>(query);
@@ -179,6 +181,67 @@ namespace DynamicsApiToDatabase.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Met à jour le flag OPE_TOP15 dans Speed pour les commandes INT39_TRACKING traitées
+        /// Respecte le processus d'update défini dans le document de refonte
+        /// </summary>
+        public async Task<int> UpdateOpeTop15ForInt39TrackingAsync()
+        {
+            _logger.LogInformation("🔄 Mise à jour OPE_TOP15 pour les commandes INT39_TRACKING...");
+
+            try
+            {
+                using var connection = new SqlConnection(_speedConnectionString);
+                await connection.OpenAsync();
+
+                const string updateQuery = @"
+                    UPDATE OPE_DAT SET OPE_DAT.OPE_TOP15 = OPE_UPD.NEW_OPE_TOP15
+                    FROM (
+                        SELECT 
+                            OPE_DAT.act_code AS 'ACT_CODE', 
+                            ope_dat.ope_keyu AS 'OPE_KEYU', 
+                            ope_dat.OPE_REDO AS 'OPE_REDO', 
+                            COALESCE(OPE_DAT.OPE_TOP15, 0) AS 'OLD_OPE_TOP15', 
+                            1 AS 'NEW_OPE_TOP15'
+                        FROM OPE_DAT 
+                        WHERE OPE_DAT.ACT_CODE = 'COSMETIQUE' 
+                            AND OPE_DAT.OPE_CCLI = 'BR' 
+                            AND OPE_DAT.ope_stat = '070'
+                            AND OPE_DAT.OPE_NoOE IN (
+                                SELECT ope_nooe 
+                                FROM MVT_DAT 
+                                WHERE act_code = 'COSMETIQUE' 
+                                    AND TMV_CODE = '40110'
+                            )
+                            AND OPE_DAT.OPE_REDO IN (
+                                SELECT SUBSTRING(
+                                    JSON_API.JSON_DATA, 
+                                    CHARINDEX('BROrderId', JSON_API.JSON_DATA, 1) + 12, 
+                                    CHARINDEX(',', JSON_API.JSON_DATA, CHARINDEX('BROrderId', JSON_API.JSON_DATA, 1)) - CHARINDEX('BROrderId', JSON_API.JSON_DATA, 1) - 13
+                                ) AS OPE_REDO
+                                FROM MiddleWare.dbo.JSON_OUT JSON_API
+                                WHERE JSON_API.JSON_DEST = 'INT39_TRACKING'
+                                    AND JSON_API.JSON_CCLI = 'BR'
+                            )
+                            AND COALESCE(OPE_DAT.OPE_TOP15, 0) <> 1
+                    ) AS OPE_UPD
+                    WHERE ope_dat.act_code = ope_upd.act_code 
+                        AND ope_dat.ope_keyu = ope_upd.ope_keyu 
+                        AND ope_dat.ope_redo = ope_upd.ope_redo";
+
+                using var command = new SqlCommand(updateQuery, connection);
+                var rowsAffected = await command.ExecuteNonQueryAsync();
+
+                _logger.LogInformation($"✅ {rowsAffected} ligne(s) mise(s) à jour - OPE_TOP15 = 1 pour INT39_TRACKING");
+                return rowsAffected;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "❌ Erreur lors de la mise à jour OPE_TOP15 pour INT39_TRACKING");
+                throw;
+            }
         }
     }
 }
