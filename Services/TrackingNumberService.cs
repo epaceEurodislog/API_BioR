@@ -55,8 +55,8 @@ namespace DynamicsApiToDatabase.Services
                         CASE WHEN OPE_DAT.OPE_TOP28 = '0' THEN 'Non' ELSE 'Oui' END AS OPE_TOP28,
                         CASE WHEN OPE_DAT.OPE_TOP22 = '0' THEN 'Non' ELSE 'Oui' END AS OPE_TOP22,
                         CONCAT(OPE_DAT.OPE_DATE1, ' ', OPE_DAT.OPE_HEURE1) AS OPE_DATETIME,
-                        CASE WHEN COALESCE(SEX_DAT.SEX_SUPR, '') = '' THEN COALESCE(SEX_DAT.SEX_SUPE, '') ELSE COALESCE(SEX_DAT.SEX_SUPR, '') END AS SEX_TRACKING,
-                        COALESCE(SEX_DAT.SEX_URLT, '') AS SEX_URLT,
+                        CASE WHEN COALESCE(SEX_DAT.SEX_SUPR, '') = '' THEN COALESCE(SEX_DAT.SEX_SUPE, '') ELSE COALESCE(SEX_DAT.SEX_SUPR, '') END AS SEX_EXPE,
+                        COALESCE(SEX_DAT.SEX_TRAK, '') AS SEX_TRAK,
                         OPE_DAT.OPE_KEYU
                     FROM ope_dat
                     LEFT OUTER JOIN sex_dat ON ope_dat.act_code = sex_dat.sex_act AND ope_dat.ope_nooe = sex_dat.sex_nooe
@@ -115,8 +115,8 @@ namespace DynamicsApiToDatabase.Services
                         CASE WHEN OPE_DAT.OPE_TOP28 = '0' THEN 'Non' ELSE 'Oui' END AS OPE_TOP28,
                         CASE WHEN OPE_DAT.OPE_TOP22 = '0' THEN 'Non' ELSE 'Oui' END AS OPE_TOP22,
                         CONCAT(OPE_DAT.OPE_DATE1, ' ', OPE_DAT.OPE_HEURE1) AS OPE_DATETIME,
-                        CASE WHEN COALESCE(SEX_DAT.SEX_SUPR, '') = '' THEN SEX_DAT.SEX_SUPE ELSE SEX_DAT.SEX_SUPR END AS SEX_TRACKING,
-                        COALESCE(SEX_DAT.SEX_URLT, '') AS SEX_URLT,
+                        CASE WHEN COALESCE(SEX_DAT.SEX_SUPR, '') = '' THEN SEX_DAT.SEX_SUPE ELSE SEX_DAT.SEX_SUPR END AS SEX_EXPE,
+                        COALESCE(SEX_DAT.SEX_TRAK, '') AS SEX_TRAK,
                         OPE_DAT.OPE_KEYU
                     FROM ope_dat
                     LEFT OUTER JOIN sex_dat ON ope_dat.act_code = sex_dat.sex_act AND ope_dat.ope_nooe = sex_dat.sex_nooe

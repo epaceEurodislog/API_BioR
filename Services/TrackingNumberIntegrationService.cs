@@ -85,7 +85,7 @@ private TrackingNumberD365Request MapToD365Request(TrackingNumberModel model)
     {
         DataAreaId = "br",
         BROrderId = model.OPE_REDO ?? string.Empty,
-        BRTrackingNumber = model.SEX_URLT ?? string.Empty,
+        BRTrackingNumber = model.SEX_TRAK ?? string.Empty,
         BR3PLPackingSlipId = model.OPE_KEYU ?? string.Empty,
         BRDocuStatus = brDocuStatus,
         BRDOcStatusDate = docStatusDate,

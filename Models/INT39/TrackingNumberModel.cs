@@ -14,8 +14,8 @@ namespace DynamicsApiToDatabase.Models.INT39
         public string OPE_TOP28 { get; set; }       // Doc requise ('Oui'/'Non')
         public string OPE_TOP22 { get; set; }       // Doc reçu ('Oui'/'Non' -> BRDocStatus)
         public string OPE_DATETIME { get; set; }    // Date/Heure (concat de OPE_DATE1 + OPE_HEURE1)
-        public string SEX_TRACKING { get; set; }    // Numéro de tracking (SEX_SUPR ou SEX_SUPE)
-        public string SEX_URLT { get; set; }        // URL Tracking (BRTrackingNumber)
+        public string SEX_EXPE { get; set; }    // Support d'expédition (SEX_SUPR ou SEX_SUPE)
+        public string SEX_TRAK { get; set; }        // Numéro de Tracking (BRTrackingNumber)
         public string OPE_KEYU { get; set; }        // N° Expédition STACI (BR3PLPackingSlipId)
         
         // Type de commande (à définir selon la méthode d'appel)

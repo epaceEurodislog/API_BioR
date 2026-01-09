@@ -288,7 +288,7 @@ namespace DynamicsApiToDatabase.Services
                 const string sql = @"
                     SELECT COUNT(*)
                     FROM JSON_OUT 
-                    WHERE JSON_DEST IN ('BL_EXPORT', 'BL_ERROR')
+                    WHERE JSON_DEST IN ('BL_EXPORT')
                     AND (JSON_TREN LIKE '%' + @BLNumber + '%' 
                          OR JSON_IMPORT_ID LIKE @BLNumber + '_%')";
 
